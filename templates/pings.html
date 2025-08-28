@@ -1,0 +1,153 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Pings</h3>
+<script>
+  async function refreshPings() {
+    try {
+      const res = await fetch('/api/pings', { cache: 'no-store' });
+      const data = await res.json();
+      for (const row of data) {
+        const rttEl = document.querySelector(`[data-rtt="${row.id}"]`);
+        const timeEl = document.querySelector(`[data-time="${row.id}"]`);
+        if (rttEl) rttEl.textContent = row.last_rtt_ms != null ? row.last_rtt_ms.toFixed(1) : '-';
+        if (timeEl) timeEl.textContent = row.last_checked_at_display ? row.last_checked_at_display + ' MMT' : '-';
+      }
+    } catch {}
+    setTimeout(refreshPings, 1000);
+  }
+  refreshPings();
+  // Updates only the relevant cells every 1s without reloading the page
+  </script>
+<div class="row">
+  <div class="col-md-5">
+    <h5>Add Ping Monitor</h5>
+    <form method="post" class="card card-body mb-4">
+      <div class="mb-2">
+        <label class="form-label">Name</label>
+        <input type="text" name="name" class="form-control" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Target IP</label>
+        <input type="text" name="target_ip" class="form-control" placeholder="8.8.8.8" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Source IP (optional)</label>
+        <input type="text" name="source_ip" class="form-control" placeholder="192.168.1.1">
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Source Interface (optional)</label>
+        <input type="text" name="source_interface" class="form-control" placeholder="ether1">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Router</label>
+        <select name="device_id" class="form-select" required>
+          <option value="">Select device...</option>
+          {% for d in devices %}
+          <option value="{{ d.id }}">{{ d.name }} ({{ d.host }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn btn-primary" type="submit">Add Monitor</button>
+    </form>
+  </div>
+  <div class="col-md-7">
+    <h5>Monitors</h5>
+    <div class="mb-2 p-2 border rounded">
+      <form class="row g-2 align-items-end" onsubmit="event.preventDefault(); loadChart();">
+        <div class="col-auto">
+          <label class="form-label">Monitor</label>
+          <select id="chartCheckId" class="form-select form-select-sm">
+            {% for r in rows %}
+            <option value="{{ r.id }}">{{ r.name }} ({{ r.target_ip }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label">Since</label>
+          <select id="sinceSeconds" class="form-select form-select-sm">
+            <option value="60">1 min</option>
+            <option value="300">5 min</option>
+            <option value="900">15 min</option>
+            <option value="3600">1 hour</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-sm btn-outline-primary" type="submit">Apply</button>
+        </div>
+      </form>
+      <div class="mt-2" style="height: 200px;">
+        <canvas id="pingChart"></canvas>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>No</th>
+            <th>Name</th>
+            <th>Target IP</th>
+            <th>Source</th>
+            <th>Router</th>
+            <th>Result (ms)</th>
+            <th>Last Checked</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ r.name }}</td>
+            <td>{{ r.target_ip }}</td>
+            <td>{{ r.source }}</td>
+            <td>{{ r.device_name }}</td>
+            <td data-rtt="{{ r.id }}">{% if r.last_rtt_ms is not none %}{{ '%.1f'|format(r.last_rtt_ms) }}{% else %}-{% endif %}</td>
+            <td data-time="{{ r.id }}">{% if r.last_checked_at %}{{ r.last_checked_at|yangon_time }} MMT{% else %}-{% endif %}</td>
+            <td>
+              <form method="post" action="{{ url_for('notify_ping', check_id=r.id) }}" class="d-inline">
+                <button class="btn btn-sm btn-outline-primary me-1">Send</button>
+              </form>
+              <form method="post" action="{{ url_for('delete_ping', check_id=r.id) }}" onsubmit="return confirm('Delete monitor {{ r.name }}?');">
+                <button class="btn btn-sm btn-danger">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+<script>
+  let chart;
+  async function loadChart() {
+    const idEl = document.getElementById('chartCheckId');
+    if (!idEl) return;
+    const checkId = idEl.value;
+    const since = document.getElementById('sinceSeconds').value;
+    const res = await fetch(`/api/pings/samples?check_id=${checkId}&since_seconds=${since}`, {cache:'no-store'});
+    const points = await res.json();
+    const labels = points.map(p => p.ts);
+    const data = points.map(p => p.rtt_ms);
+    if (!chart) {
+      const ctx = document.getElementById('pingChart').getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'RTT (ms)', data, borderColor: '#0d6efd', tension: 0.2, pointRadius: 0 }] },
+        options: { scales: { x: { type: 'time', time: { unit: 'second' } }, y: { beginAtZero: true } }, animation: false, responsive: true, maintainAspectRatio: false }
+      });
+    } else {
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = data;
+      chart.update('none');
+    }
+  }
+  // keep chart live
+  setInterval(loadChart, 1000);
+  // initial
+  loadChart();
+</script>
+{% endblock %}

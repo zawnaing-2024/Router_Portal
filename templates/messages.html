@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Messages</h3>
+<form method="post" class="card card-body">
+  <div class="mb-2">
+    <label class="form-label">Message to send to Telegram group</label>
+    <textarea name="text" class="form-control" rows="5" placeholder="Type your message..."></textarea>
+  </div>
+  <button class="btn btn-success">Send</button>
+  <p class="text-muted small mt-2">Uses the token and chat id from Settings.</p>
+</form>
+{% endblock %}
+
+

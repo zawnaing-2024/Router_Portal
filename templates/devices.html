@@ -1,0 +1,87 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row">
+  <div class="col-md-6">
+    <h4>Add Device</h4>
+    <form method="post" class="card card-body mb-4">
+      <div class="mb-2">
+        <label class="form-label">Name</label>
+        <input type="text" name="name" class="form-control" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Host/IP</label>
+        <input type="text" name="host" class="form-control" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SSH Port</label>
+        <input type="number" name="port" class="form-control" value="22" min="1" max="65535">
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Username</label>
+        <input type="text" name="username" class="form-control" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Password</label>
+        <input type="password" name="password" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Backup Schedule</label>
+        <select name="schedule" class="form-select">
+          <option value="manual">Manual</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SNMP Version</label>
+        <select name="snmp_version" class="form-select">
+          <option value="v2c">v2c</option>
+          <option value="v3" disabled>v3 (coming soon)</option>
+        </select>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SNMP Community (for v2c)</label>
+        <input type="text" name="snmp_community" class="form-control" placeholder="public">
+      </div>
+      <button class="btn btn-primary" type="submit">Add Device</button>
+    </form>
+  </div>
+  <div class="col-md-6">
+    <h4>Devices</h4>
+    <div class="table-responsive">
+      <table class="table table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>Name</th>
+            <th>Host</th>
+            <th>Port</th>
+            <th>Schedule</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in devices %}
+          <tr>
+            <td>{{ d.name }}</td>
+            <td>{{ d.host }}</td>
+            <td>{{ d.port }}</td>
+            <td>
+              {{ d.schedule|capitalize }}<br>
+              <span class="text-muted small">SNMP: {{ d.snmp_version }}{% if d.snmp_community %} ({{ d.snmp_community }}){% endif %}</span>
+            </td>
+            <td>
+              <form method="post" action="{{ url_for('delete_device', device_id=d.id) }}" onsubmit="return confirm('Delete device {{ d.name }}?');">
+                <button class="btn btn-sm btn-danger">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+

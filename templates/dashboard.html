@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-2">
+  <h3 class="mb-0">Dashboard</h3>
+  <div class="text-muted small">
+    Last metrics update:
+    {% if last_metrics_update %}
+      {{ last_metrics_update|yangon_time }} MMT
+    {% else %}
+      -
+    {% endif %}
+  </div>
+  </div>
+
+<div class="table-responsive">
+  <table class="table table-bordered align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>Device</th>
+        <th>Host</th>
+        <th>SSH Port</th>
+        <th>Last Backup</th>
+        <th>Status</th>
+        <th>CPU</th>
+        <th>RAM (free/total)</th>
+        <th>Storage (free/total)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      {% set m = latest_metrics_by_device.get(d.id) %}
+      <tr>
+        <td>{{ d.name }}</td>
+        <td>{{ d.host }}</td>
+        <td>{{ d.port }}</td>
+        <td>
+          {% if d.last_backup_time %}
+            {{ d.last_backup_time|yangon_time }} MMT
+          {% else %}
+            -
+          {% endif %}
+        </td>
+        <td>
+          {% if d.last_backup_status == 'success' %}
+            <span class="badge text-bg-success">Success</span>
+          {% elif d.last_backup_status == 'fail' %}
+            <span class="badge text-bg-danger">Fail</span>
+          {% else %}
+            <span class="badge text-bg-secondary">N/A</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if m and m.cpu_load_percent is not none %}
+            {{ '%.0f'|format(m.cpu_load_percent) }}%
+          {% else %}-{% endif %}
+        </td>
+        <td>
+          {% if m and m.free_memory_bytes and m.total_memory_bytes %}
+            {{ (m.free_memory_bytes/1024/1024)|round(0) }} MiB / {{ (m.total_memory_bytes/1024/1024)|round(0) }} MiB
+          {% else %}-{% endif %}
+        </td>
+        <td>
+          {% if m and m.free_storage_bytes and m.total_storage_bytes %}
+            {{ (m.free_storage_bytes/1024/1024)|round(0) }} MiB / {{ (m.total_storage_bytes/1024/1024)|round(0) }} MiB
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="text-muted">Resource metrics update every 5 minutes.</p>
+{% endblock %}
+
+

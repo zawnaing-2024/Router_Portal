@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Backups</h3>
+<div class="table-responsive">
+  <table class="table table-bordered align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>Device</th>
+        <th>Host</th>
+        <th>Last Backup</th>
+        <th>Status</th>
+        <th>Manual Backup</th>
+        <th>Auto Schedule</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr>
+        <td>{{ d.name }}</td>
+        <td>{{ d.host }}</td>
+        <td>
+          {% if d.last_backup_time %}
+            {{ d.last_backup_time|yangon_time }} MMT
+          {% else %}-{% endif %}
+        </td>
+        <td>
+          {% if d.last_backup_status == 'success' %}
+            <span class="badge text-bg-success">Success</span>
+          {% elif d.last_backup_status == 'fail' %}
+            <span class="badge text-bg-danger">Fail</span>
+          {% else %}
+            <span class="badge text-bg-secondary">N/A</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('manual_backup', device_id=d.id) }}">
+            <button class="btn btn-sm btn-primary">Run Now</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('update_schedule', device_id=d.id) }}" class="d-flex gap-2">
+            <select name="schedule" class="form-select form-select-sm" style="max-width: 160px;">
+              <option value="manual" {% if d.schedule == 'manual' %}selected{% endif %}>Manual</option>
+              <option value="daily" {% if d.schedule == 'daily' %}selected{% endif %}>Daily</option>
+              <option value="weekly" {% if d.schedule == 'weekly' %}selected{% endif %}>Weekly</option>
+              <option value="monthly" {% if d.schedule == 'monthly' %}selected{% endif %}>Monthly</option>
+            </select>
+            <button class="btn btn-sm btn-outline-secondary">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="text-muted">Backups are saved in the server's "backups" folder with format: <code>device_name_DDMMYYHH.backup</code>.</p>
+</div>
+{% endblock %}
+
+

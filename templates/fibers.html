@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Fiber Monitors</h3>
+<div class="row">
+  <div class="col-md-5">
+    <h5>Add Monitor</h5>
+    <form method="post" class="card card-body mb-3">
+      <div class="mb-2">
+        <label class="form-label">Name</label>
+        <input type="text" name="name" class="form-control" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Interface (e.g., sfp1)</label>
+        <input type="text" name="if_name" class="form-control" placeholder="sfp1" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Router</label>
+        <select name="device_id" class="form-select" required>
+          <option value="">Select device...</option>
+          {% for d in devices %}
+          <option value="{{ d.id }}">{{ d.name }} ({{ d.host }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn btn-primary">Add</button>
+    </form>
+  </div>
+  <div class="col-md-7">
+    <h5>Monitors</h5>
+    <div class="table-responsive">
+      <table class="table table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>No</th>
+            <th>Name</th>
+            <th>Router</th>
+            <th>Interface</th>
+            <th>Rx (dBm)</th>
+            <th>Tx (dBm)</th>
+            <th>Oper</th>
+            <th>Last</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ r.name }}</td>
+            <td>{{ r.device_name }}</td>
+            <td>{{ r.if_name }}</td>
+            <td>{{ r.rx if r.rx is not none else '-' }}</td>
+            <td>{{ r.tx if r.tx is not none else '-' }}</td>
+            <td>{% if r.oper == 1 %}<span class="badge text-bg-success">up</span>{% elif r.oper == 2 %}<span class="badge text-bg-danger">down</span>{% else %}-{% endif %}</td>
+            <td>{% if r.ts %}{{ r.ts|yangon_time }} MMT{% else %}-{% endif %}</td>
+            <td>
+              <form method="post" action="{{ url_for('fiber_probe', check_id=r.id) }}">
+                <button class="btn btn-sm btn-outline-primary">Probe</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-3 p-2 border rounded">
+      <form class="row g-2 align-items-end" onsubmit="event.preventDefault(); loadFiberChart();">
+        <div class="col-auto">
+          <label class="form-label">Monitor</label>
+          <select id="fiberCheckId" class="form-select form-select-sm">
+            {% for r in rows %}
+            <option value="{{ r.id }}">{{ r.name }} ({{ r.if_name }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label">Since</label>
+          <select id="fiberSince" class="form-select form-select-sm">
+            <option value="600">10 min</option>
+            <option value="3600">1 hour</option>
+            <option value="21600">6 hours</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-sm btn-outline-primary">Apply</button>
+        </div>
+      </form>
+      <div class="mt-2" style="height: 220px;">
+        <canvas id="fiberChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+<script>
+  let fiberChart;
+  async function loadFiberChart() {
+    const id = document.getElementById('fiberCheckId')?.value;
+    if (!id) return;
+    const since = document.getElementById('fiberSince').value;
+    const res = await fetch(`/api/fibers/samples?check_id=${id}&since_seconds=${since}`, {cache:'no-store'});
+    const pts = await res.json();
+    const labels = pts.map(p => p.ts);
+    const rx = pts.map(p => p.rx);
+    const tx = pts.map(p => p.tx);
+    if (!fiberChart) {
+      const ctx = document.getElementById('fiberChart').getContext('2d');
+      fiberChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [
+          { label: 'Rx (dBm)', data: rx, borderColor: '#dc3545', tension: 0.2, pointRadius: 0 },
+          { label: 'Tx (dBm)', data: tx, borderColor: '#0d6efd', tension: 0.2, pointRadius: 0 }
+        ] },
+        options: { scales: { x: { type: 'time', time: { unit: 'minute' } } }, animation: false, responsive: true, maintainAspectRatio: false }
+      });
+    } else {
+      fiberChart.data.labels = labels;
+      fiberChart.data.datasets[0].data = rx;
+      fiberChart.data.datasets[1].data = tx;
+      fiberChart.update('none');
+    }
+  }
+  setInterval(loadFiberChart, 60000);
+  loadFiberChart();
+</script>
+{% endblock %}
+
+
