@@ -22,6 +22,8 @@ from models import CompanyTelegramSetting
 
 scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Yangon'))
 _flask_app = None
+# Round-robin offset for ping checks so we don't process all of them every tick
+_ping_offset = 0
 
 
 def _job_id(device_id: int) -> str:
@@ -136,12 +138,29 @@ def _scheduled_monitoring_job() -> None:
 
 def _scheduled_ping_job() -> None:
     global _flask_app
+    global _ping_offset
     app = _flask_app
     if app is None:
         return
     with app.app_context():
-        checks = PingCheck.query.all()
-        for check in checks:
+        checks = PingCheck.query.order_by(PingCheck.id.asc()).all()
+        total = len(checks)
+        if total == 0:
+            return
+        # Process a limited batch per tick to keep runtime short
+        try:
+            batch_size = int(os.environ.get('PING_BATCH_SIZE', '10'))
+        except ValueError:
+            batch_size = 10
+        start = _ping_offset % total
+        end = start + batch_size
+        if end <= total:
+            selected = checks[start:end]
+        else:
+            selected = checks[start:] + checks[: (end - total)]
+        _ping_offset = (start + batch_size) % total
+
+        for check in selected:
             device = Device.query.get(check.device_id)
             if not device or not device.enabled or not device.company_id:
                 continue
@@ -262,15 +281,15 @@ def start_monitoring_job(app) -> None:
         coalesce=True,
         max_instances=1,
     )
-    # 1-second ping checks
+    # Ping checks every 3 seconds (batched to avoid overload)
     scheduler.add_job(
         func=_scheduled_ping_job,
-        trigger=IntervalTrigger(seconds=1),
+        trigger=IntervalTrigger(seconds=int(os.environ.get('PING_INTERVAL_SECONDS', '3'))),
         id='ping_checks_1s',
         replace_existing=True,
         coalesce=True,
         max_instances=1,
-        misfire_grace_time=1,
+        misfire_grace_time=2,
     )
     scheduler.add_job(
         func=_scheduled_fiber_job,
