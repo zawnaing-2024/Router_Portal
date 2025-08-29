@@ -47,6 +47,15 @@
                                min="1" max="10000">
                         <div class="form-text">Alert when ping exceeds this value</div>
                     </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Performance Report Interval</label>
+                        <select name="report_interval_minutes" class="form-select">
+                            <option value="60" {% if settings.report_interval_minutes == 60 %}selected{% endif %}>Every 60 minutes</option>
+                            <option value="30" {% if settings.report_interval_minutes == 30 %}selected{% endif %}>Every 30 minutes</option>
+                            <option value="15" {% if settings.report_interval_minutes == 15 %}selected{% endif %}>Every 15 minutes</option>
+                        </select>
+                        <div class="form-text">Controls how often summary reports are sent</div>
+                    </div>
                 </div>
 
                 <!-- Alert Settings -->

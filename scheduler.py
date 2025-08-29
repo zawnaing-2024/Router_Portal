@@ -17,6 +17,7 @@ from netmiko_utils import run_ping_on_router
 from telegram_utils import send_company_telegram_message, should_send_company_alert, get_company_ping_threshold
 from snmp_utils import get_interface_status_and_power
 from models import FiberCheck, FiberSample
+from models import CompanyTelegramSetting
 
 
 scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Yangon'))
@@ -328,15 +329,33 @@ def _scheduled_hourly_report() -> None:
             check = PingCheck.query.filter_by(device_id=d.id).first()
             rtt = f"{check.last_rtt_ms:.1f} ms" if check and check.last_rtt_ms is not None else "-"
 
-            lines = company_to_lines.setdefault(d.company_id, ["<b>Hourly Performance Report</b>"])
+            # Get latest fiber sample per device across its checks
+            fiber_checks = FiberCheck.query.filter_by(device_id=d.id).all()
+            fiber_lines = []
+            for fc in fiber_checks:
+                rx = f"{fc.last_rx_dbm:.2f} dBm" if fc.last_rx_dbm is not None else "-"
+                tx = f"{fc.last_tx_dbm:.2f} dBm" if fc.last_tx_dbm is not None else "-"
+                fiber_lines.append(f"Fiber {fc.name} ({fc.interface_name}): RX {rx}, TX {tx}")
+            fiber_str = ("\n" + "\n".join(fiber_lines)) if fiber_lines else ""
+
+            lines = company_to_lines.setdefault(d.company_id, ["<b>Performance Report</b>"])
             lines.append(
-                f"\n<b>{d.name}</b> ({d.host})\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | RTT: {rtt}"
+                f"\n<b>Device:</b> {d.name}\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | Latency: {rtt}{fiber_str}"
             )
 
-        # Send one message per company
+        # Send one message per company, respecting report interval
+        now = datetime.now(timezone.utc)
         for company_id, lines in company_to_lines.items():
-            if company_id:
-                send_company_telegram_message(company_id, "\n".join(lines))
+            if not company_id:
+                continue
+            settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
+            if not settings or not settings.enabled:
+                continue
+            interval = settings.report_interval_minutes or 60
+            if settings.last_report_sent_at is None or (now - settings.last_report_sent_at).total_seconds() >= interval * 60:
+                ok = send_company_telegram_message(company_id, "\n".join(lines))
+                settings.last_report_sent_at = now if ok else settings.last_report_sent_at
+        db.session.commit()
 
 
 def _scheduled_fiber_job() -> None:

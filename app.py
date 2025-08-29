@@ -159,6 +159,8 @@ def _run_sqlite_migrations() -> None:
                 " fiber_down_alerts BOOLEAN NOT NULL DEFAULT 1,\n"
                 " high_ping_alerts BOOLEAN NOT NULL DEFAULT 1,\n"
                 " high_ping_threshold_ms INTEGER NOT NULL DEFAULT 90,\n"
+                " report_interval_minutes INTEGER NOT NULL DEFAULT 60,\n"
+                " last_report_sent_at DATETIME,\n"
                 " FOREIGN KEY(company_id) REFERENCES companies(id)\n"
                 ")"
             )
@@ -825,6 +827,14 @@ def create_app() -> Flask:
                     telegram_settings.high_ping_threshold_ms = int(request.form.get('high_ping_threshold_ms', '90'))
                 except ValueError:
                     telegram_settings.high_ping_threshold_ms = 90
+
+                # Reporting interval
+                try:
+                    telegram_settings.report_interval_minutes = int(request.form.get('report_interval_minutes', '60'))
+                    if telegram_settings.report_interval_minutes not in (15, 30, 60):
+                        telegram_settings.report_interval_minutes = 60
+                except ValueError:
+                    telegram_settings.report_interval_minutes = 60
 
                 db.session.commit()
                 flash(f'Telegram settings for {company.name} saved.', 'success')

@@ -121,6 +121,9 @@ class CompanyTelegramSetting(db.Model):
     fiber_down_alerts = db.Column(db.Boolean, nullable=False, default=True)
     high_ping_alerts = db.Column(db.Boolean, nullable=False, default=True)
     high_ping_threshold_ms = db.Column(db.Integer, nullable=False, default=90)
+    # Scheduled report
+    report_interval_minutes = db.Column(db.Integer, nullable=False, default=60)
+    last_report_sent_at = db.Column(db.DateTime(timezone=True))
 
 
 class Company(db.Model):
