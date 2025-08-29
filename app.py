@@ -895,15 +895,49 @@ def create_app() -> Flask:
     @app.route('/messages', methods=['GET', 'POST'])
     @login_required
     def messages_page():
+        # Determine which companies the user can message
+        if current_user.is_superadmin:
+            accessible_company_ids = [c.id for c in Company.query.order_by(Company.name.asc()).all()]
+            companies = Company.query.order_by(Company.name.asc()).all()
+        else:
+            accessible_company_ids = get_user_company_ids(current_user.id)
+            companies = Company.query.filter(Company.id.in_(accessible_company_ids)).order_by(Company.name.asc()).all()
+
         if request.method == 'POST':
             text = request.form.get('text', '').strip()
             if not text:
                 flash('Message cannot be empty.', 'danger')
                 return redirect(url_for('messages_page'))
-            ok, info = send_telegram_message_with_details(text)
-            flash('Message sent.' if ok else f'Failed to send: {info}', 'success' if ok else 'danger')
+
+            # Optional company selection; default = all accessible
+            company_id_str = request.form.get('company_id')
+            target_company_ids = accessible_company_ids
+            if company_id_str and company_id_str != 'all':
+                try:
+                    cid = int(company_id_str)
+                    if cid in accessible_company_ids:
+                        target_company_ids = [cid]
+                    else:
+                        flash('You do not have access to the selected company.', 'danger')
+                        return redirect(url_for('messages_page'))
+                except ValueError:
+                    pass
+
+            from telegram_utils import send_company_telegram_message_with_details
+            failures = []
+            for cid in target_company_ids:
+                ok, info = send_company_telegram_message_with_details(cid, text)
+                if not ok:
+                    failures.append((cid, info))
+
+            if not failures:
+                flash('Message sent to Telegram.', 'success')
+            else:
+                fail_str = '; '.join([f'company {cid}: {info}' for cid, info in failures])
+                flash(f'Failed for {fail_str}', 'danger')
             return redirect(url_for('messages_page'))
-        return render_template('messages.html')
+
+        return render_template('messages.html', companies=companies)
 
     @app.route('/fibers', methods=['GET', 'POST'])
     @login_required
