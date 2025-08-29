@@ -77,17 +77,11 @@
                                     {{ device_count|length }}
                                 </td>
                                 <td>
-                                    {% set telegram_status = [] %}
-                                    {% for setting in [] %}
-                                        {% if setting.company_id == company.id %}
-                                            {% if setting.bot_token and setting.chat_id %}
-                                                {% if telegram_status.append('✅ Configured') %}{% endif %}
-                                            {% else %}
-                                                {% if telegram_status.append('⚠️ Not Configured') %}{% endif %}
-                                            {% endif %}
-                                        {% endif %}
-                                    {% endfor %}
-                                    {{ telegram_status[0] if telegram_status else '⚠️ Not Configured' }}
+                                    {% if company.telegram_settings and company.telegram_settings.bot_token and company.telegram_settings.chat_id %}
+                                        ✅ Configured
+                                    {% else %}
+                                        ⚠️ Not Configured
+                                    {% endif %}
                                 </td>
                                 <td>
                                     <div class="btn-group" role="group">

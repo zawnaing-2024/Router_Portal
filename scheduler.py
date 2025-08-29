@@ -121,8 +121,9 @@ def _scheduled_monitoring_job() -> None:
             ):
                 alerts.append('Storage')
                 device.last_storage_alert_at = datetime.now(timezone.utc)
-            if alerts:
-                send_telegram_message(
+            if alerts and device.company_id:
+                send_company_telegram_message(
+                    device.company_id,
                     text=(
                         f"<b>Resource Alert</b>\n"
                         f"Device: {device.name} ({device.host})\n"
@@ -302,7 +303,8 @@ def _scheduled_hourly_report() -> None:
         return
     with app.app_context():
         devices = Device.query.order_by(Device.name.asc()).all()
-        lines = ["<b>Hourly Performance Report</b>"]
+        # Group report lines per company
+        company_to_lines = {}
         for d in devices:
             latest = (
                 ResourceMetric.query.filter_by(device_id=d.id)
@@ -325,9 +327,16 @@ def _scheduled_hourly_report() -> None:
 
             check = PingCheck.query.filter_by(device_id=d.id).first()
             rtt = f"{check.last_rtt_ms:.1f} ms" if check and check.last_rtt_ms is not None else "-"
-            lines.append(f"\n<b>{d.name}</b> ({d.host})\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | RTT: {rtt}")
 
-        send_telegram_message("\n".join(lines))
+            lines = company_to_lines.setdefault(d.company_id, ["<b>Hourly Performance Report</b>"])
+            lines.append(
+                f"\n<b>{d.name}</b> ({d.host})\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | RTT: {rtt}"
+            )
+
+        # Send one message per company
+        for company_id, lines in company_to_lines.items():
+            if company_id:
+                send_company_telegram_message(company_id, "\n".join(lines))
 
 
 def _scheduled_fiber_job() -> None:
