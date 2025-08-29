@@ -22,8 +22,8 @@
         <th>Last Backup</th>
         <th>Status</th>
         <th>CPU</th>
-        <th>RAM (free/total)</th>
-        <th>Storage (free/total)</th>
+        <th>RAM</th>
+        <th>Storage</th>
       </tr>
     </thead>
     <tbody>
@@ -55,13 +55,17 @@
           {% else %}-{% endif %}
         </td>
         <td>
-          {% if m and m.free_memory_bytes and m.total_memory_bytes %}
-            {{ (m.free_memory_bytes/1024/1024)|round(0) }} MiB / {{ (m.total_memory_bytes/1024/1024)|round(0) }} MiB
+          {% if m and m.free_memory_bytes is not none and m.total_memory_bytes %}
+            {% set used_mem = m.total_memory_bytes - m.free_memory_bytes %}
+            {% set mem_pct = (used_mem / m.total_memory_bytes * 100.0) %}
+            {{ mem_pct|round(0) }}% ({{ (used_mem/1024/1024)|round(0) }} MiB / {{ (m.total_memory_bytes/1024/1024)|round(0) }} MiB)
           {% else %}-{% endif %}
         </td>
         <td>
-          {% if m and m.free_storage_bytes and m.total_storage_bytes %}
-            {{ (m.free_storage_bytes/1024/1024)|round(0) }} MiB / {{ (m.total_storage_bytes/1024/1024)|round(0) }} MiB
+          {% if m and m.free_storage_bytes is not none and m.total_storage_bytes %}
+            {% set used_st = m.total_storage_bytes - m.free_storage_bytes %}
+            {% set st_pct = (used_st / m.total_storage_bytes * 100.0) %}
+            {{ st_pct|round(0) }}% ({{ (used_st/1024/1024)|round(0) }} MiB / {{ (m.total_storage_bytes/1024/1024)|round(0) }} MiB)
           {% else %}-{% endif %}
         </td>
       </tr>
