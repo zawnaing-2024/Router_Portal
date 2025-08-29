@@ -89,10 +89,61 @@ def backup_device_and_download(device) -> Tuple[bool, str]:
 
 
 def fetch_device_resources(device) -> Optional[Dict[str, float]]:
-    """Fetch CPU, RAM, and storage metrics from Mikrotik RouterOS.
+    """Fetch CPU, RAM, and storage metrics.
 
-    Returns a dict or None on failure.
+    - For Mikrotik: use RouterOS commands
+    - For Linux: read /proc and df via SSH
     """
+    if getattr(device, 'device_type', 'mikrotik') == 'linux':
+        try:
+            client = _open_ssh_client(device)
+            # CPU usage (average over short interval)
+            cpu_cmd = "top -bn1 | grep 'Cpu(s)' || mpstat 1 1 | tail -1"
+            mem_cmd = "cat /proc/meminfo"
+            disk_cmd = "df -B1 --total | tail -1"
+            stdin, stdout, stderr = client.exec_command(cpu_cmd)
+            cpu_out = stdout.read().decode(errors='ignore')
+            stdin, stdout, stderr = client.exec_command(mem_cmd)
+            mem_out = stdout.read().decode(errors='ignore')
+            stdin, stdout, stderr = client.exec_command(disk_cmd)
+            disk_out = stdout.read().decode(errors='ignore')
+            client.close()
+        except Exception:
+            return None
+
+        metrics: Dict[str, float] = {}
+        # Parse CPU from top output: "%Cpu(s):  3.0 us,  1.0 sy, ... 96.0 id"
+        m = re.search(r"(\d+[\.,]?\d*)\s*id", cpu_out)
+        if m:
+            try:
+                idle = float(m.group(1).replace(',', '.'))
+                metrics['cpu_load_percent'] = max(0.0, min(100.0, 100.0 - idle))
+            except ValueError:
+                pass
+        # Memory from /proc/meminfo
+        def get_kb(key: str) -> Optional[int]:
+            mm = re.search(rf"^{key}:\s+(\d+)\s+kB", mem_out, re.MULTILINE)
+            return int(mm.group(1)) * 1024 if mm else None
+        mem_total = get_kb('MemTotal')
+        mem_free = get_kb('MemAvailable') or get_kb('MemFree')
+        if mem_total:
+            metrics['total_memory_bytes'] = mem_total
+        if mem_free is not None:
+            metrics['free_memory_bytes'] = mem_free
+        # Disk from df --total (fields: Filesystem,1B-blocks,Used,Available,Use%,Mounted)
+        parts = disk_out.split()
+        if len(parts) >= 5:
+            try:
+                total = int(parts[1])
+                used = int(parts[2])
+                avail = int(parts[3])
+                metrics['total_storage_bytes'] = total
+                metrics['free_storage_bytes'] = avail
+            except ValueError:
+                pass
+        return metrics if metrics else None
+
+    # Mikrotik path
     try:
         client = _open_ssh_client(device)
         stdin, stdout, stderr = client.exec_command("/system resource print without-paging")
@@ -102,12 +153,7 @@ def fetch_device_resources(device) -> Optional[Dict[str, float]]:
     except Exception:  # noqa: BLE001
         return None
 
-    # Parse output like:
-    # cpu-load: 5%
-    # free-memory: 123.4MiB
-    # total-memory: 256.0MiB
-    # free-hdd-space: 200.0MiB
-    # total-hdd-space: 512.0MiB
+    # Parse output like RouterOS resource print
     def parse_size_to_bytes(value: str) -> Optional[int]:
         match = re.match(r"([0-9]+(?:\.[0-9]+)?)\s*(KiB|MiB|GiB|TiB|kB|MB|GB|TB)?", value)
         if not match:

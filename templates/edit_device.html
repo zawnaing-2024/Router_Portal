@@ -17,6 +17,13 @@
         <input type="number" name="port" class="form-control" value="{{ device.port }}" min="1" max="65535">
       </div>
       <div class="mb-2">
+        <label class="form-label">Device Type</label>
+        <select name="device_type" class="form-select">
+          <option value="mikrotik" {% if device.device_type == 'mikrotik' %}selected{% endif %}>Mikrotik (RouterOS)</option>
+          <option value="linux" {% if device.device_type == 'linux' %}selected{% endif %}>Linux (Ubuntu)</option>
+        </select>
+      </div>
+      <div class="mb-2">
         <label class="form-label">Username</label>
         <input type="text" name="username" class="form-control" value="{{ device.username }}" required>
       </div>

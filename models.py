@@ -15,6 +15,8 @@ class Device(db.Model):
     username = db.Column(db.String(128), nullable=False)
     password = db.Column(db.String(255), nullable=False)
     port = db.Column(db.Integer, nullable=False, default=22)
+    # Device type: 'mikrotik' or 'linux'
+    device_type = db.Column(db.String(16), nullable=False, default='mikrotik')
     enabled = db.Column(db.Boolean, nullable=False, default=True)
     # SNMP configuration
     snmp_version = db.Column(db.String(8), nullable=False, default='v2c')

@@ -79,6 +79,8 @@ def _run_sqlite_migrations() -> None:
             try:
                 result = conn.exec_driver_sql("PRAGMA table_info(devices)")
                 dcols = {row[1] for row in result}
+                if 'device_type' not in dcols:
+                    conn.exec_driver_sql("ALTER TABLE devices ADD COLUMN device_type VARCHAR(16) NOT NULL DEFAULT 'mikrotik'")
                 if 'snmp_version' not in dcols:
                     conn.exec_driver_sql("ALTER TABLE devices ADD COLUMN snmp_version VARCHAR(8) DEFAULT 'v2c' NOT NULL")
                 if 'snmp_community' not in dcols:
@@ -368,6 +370,7 @@ def create_app() -> Flask:
                 snmp_version=request.form.get('snmp_version','v2c'),
                 snmp_community=request.form.get('snmp_community') or None,
                 company_id=int(company_id),
+                device_type=request.form.get('device_type','mikrotik'),
             )
             db.session.add(device)
             db.session.commit()
@@ -426,6 +429,10 @@ def create_app() -> Flask:
             device.schedule = schedule
             device.snmp_version = snmp_version
             device.snmp_community = snmp_community
+            # Update device type if provided
+            dt = request.form.get('device_type')
+            if dt in ('mikrotik','linux'):
+                device.device_type = dt
 
             db.session.commit()
 

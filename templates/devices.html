@@ -34,6 +34,13 @@
         </select>
       </div>
       <div class="mb-2">
+        <label class="form-label">Device Type</label>
+        <select name="device_type" class="form-select">
+          <option value="mikrotik">Mikrotik (RouterOS)</option>
+          <option value="linux">Linux (Ubuntu)</option>
+        </select>
+      </div>
+      <div class="mb-2">
         <label class="form-label">SNMP Version</label>
         <select name="snmp_version" class="form-select">
           <option value="v2c">v2c</option>
@@ -66,6 +73,7 @@
             <th>Host</th>
             <th>Port</th>
             <th>Schedule</th>
+            <th>Type</th>
             <th></th>
           </tr>
         </thead>
@@ -79,6 +87,7 @@
               {{ d.schedule|capitalize }}<br>
               <span class="text-muted small">SNMP: {{ d.snmp_version }}{% if d.snmp_community %} ({{ d.snmp_community }}){% endif %}</span>
             </td>
+            <td>{{ d.device_type or 'mikrotik' }}</td>
             <td>
               <div class="btn-group" role="group">
                 <a href="{{ url_for('edit_device', device_id=d.id) }}" class="btn btn-sm btn-outline-primary">Edit</a>
