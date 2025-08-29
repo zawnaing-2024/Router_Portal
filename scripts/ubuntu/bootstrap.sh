@@ -103,5 +103,20 @@ rm -f /etc/nginx/sites-enabled/default || true
 nginx -t
 systemctl reload nginx
 
-echo "[done] Open http://SERVER_IP/ and set Telegram in Settings."
+echo "[migrations] running database migrations"
+sudo -u "$APP_USER" bash -lc "
+cd '$APP_DIR'
+. .venv/bin/activate
+python3 -c 'from app import create_app; app = create_app(); app.app_context().push()'
+"
+
+echo "[done] Router Portal is ready!"
+echo "  Web Interface: http://SERVER_IP/"
+echo "  Admin Setup: Visit /init to create first admin user"
+echo "  Telegram Settings: Configure per-company in Admin panel"
+echo ""
+echo "Useful commands:"
+echo "  Status: sudo systemctl status router-portal"
+echo "  Logs: sudo journalctl -u router-portal -f"
+echo "  Restart: sudo systemctl restart router-portal"
 
