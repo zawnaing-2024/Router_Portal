@@ -164,6 +164,20 @@ def _run_sqlite_migrations() -> None:
                 " FOREIGN KEY(company_id) REFERENCES companies(id)\n"
                 ")"
             )
+            # Ensure new columns on existing company_telegram_settings
+            try:
+                result = conn.exec_driver_sql("PRAGMA table_info(company_telegram_settings)")
+                ccols = {row[1] for row in result}
+                if 'report_interval_minutes' not in ccols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE company_telegram_settings ADD COLUMN report_interval_minutes INTEGER NOT NULL DEFAULT 60"
+                    )
+                if 'last_report_sent_at' not in ccols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE company_telegram_settings ADD COLUMN last_report_sent_at DATETIME"
+                    )
+            except Exception:
+                pass
             # Ensure fiber_checks has alert tracking fields
             try:
                 result = conn.exec_driver_sql("PRAGMA table_info(fiber_checks)")
