@@ -281,18 +281,15 @@ def start_monitoring_job(app) -> None:
         max_instances=1,
         misfire_grace_time=10,
     )
-    # Hourly performance report at minute 0 (configurable via HOURLY_REPORT_MINUTE)
-    try:
-        minute = int(os.environ.get('HOURLY_REPORT_MINUTE', '0'))
-    except ValueError:
-        minute = 0
+    # Evaluate performance reports every minute; per-company interval logic decides when to send
     scheduler.add_job(
         func=_scheduled_hourly_report,
-        trigger=CronTrigger(minute=minute),
+        trigger=IntervalTrigger(minutes=1),
         id='hourly_performance_report',
         replace_existing=True,
         coalesce=True,
         max_instances=1,
+        misfire_grace_time=30,
     )
     scheduler.resume()
 
