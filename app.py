@@ -683,8 +683,11 @@ def create_app() -> Flask:
             flash('You do not have access to this ping monitor.', 'danger')
             return redirect(url_for('pings_page'))
 
+        # Send using the router's company-specific Telegram settings
+        from telegram_utils import send_company_telegram_message_with_details
         status = f"{check.last_rtt_ms:.1f} ms" if check.last_rtt_ms is not None else 'Timeout'
-        sent, info = send_telegram_message_with_details(
+        sent, info = send_company_telegram_message_with_details(
+            device.company_id,
             text=(
                 f"<b>Ping Status</b>\n"
                 f"Monitor: {check.name}\n"
@@ -832,24 +835,9 @@ def create_app() -> Flask:
                     flash('Bot token and Chat ID are required to send test message.', 'danger')
                     return redirect(url_for('company_telegram_settings', company_id=company_id))
 
-                # Set environment variables temporarily for testing
-                original_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-                original_chat = os.environ.get('TELEGRAM_CHAT_ID')
-
-                os.environ['TELEGRAM_BOT_TOKEN'] = telegram_settings.bot_token
-                os.environ['TELEGRAM_CHAT_ID'] = telegram_settings.chat_id
-
-                ok, info = send_telegram_message_with_details(f'🧪 Test message from {company.name} ✅')
-
-                # Restore original environment
-                if original_token:
-                    os.environ['TELEGRAM_BOT_TOKEN'] = original_token
-                else:
-                    os.environ.pop('TELEGRAM_BOT_TOKEN', None)
-                if original_chat:
-                    os.environ['TELEGRAM_CHAT_ID'] = original_chat
-                else:
-                    os.environ.pop('TELEGRAM_CHAT_ID', None)
+                # Send via company-specific settings
+                from telegram_utils import send_company_telegram_message_with_details
+                ok, info = send_company_telegram_message_with_details(company_id, f'🧪 Test message from {company.name} ✅')
 
                 flash('Test sent to Telegram.' if ok else f'Test failed: {info}', 'success' if ok else 'danger')
                 return redirect(url_for('company_telegram_settings', company_id=company_id))
