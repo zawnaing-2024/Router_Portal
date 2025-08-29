@@ -97,29 +97,59 @@ def fetch_device_resources(device) -> Optional[Dict[str, float]]:
     if getattr(device, 'device_type', 'mikrotik') == 'linux':
         try:
             client = _open_ssh_client(device)
-            # CPU usage (average over short interval)
-            cpu_cmd = "top -bn1 | grep 'Cpu(s)' || mpstat 1 1 | tail -1"
+            # CPU from /proc/stat (locale-independent): two samples to compute usage
+            cpu_cmd = "cat /proc/stat; sleep 0.5; cat /proc/stat"
             mem_cmd = "cat /proc/meminfo"
-            disk_cmd = "df -B1 --total | tail -1"
-            stdin, stdout, stderr = client.exec_command(cpu_cmd)
-            cpu_out = stdout.read().decode(errors='ignore')
-            stdin, stdout, stderr = client.exec_command(mem_cmd)
-            mem_out = stdout.read().decode(errors='ignore')
-            stdin, stdout, stderr = client.exec_command(disk_cmd)
-            disk_out = stdout.read().decode(errors='ignore')
+            disk_cmds = [
+                "df -B1 / | tail -1",
+            ]
+            # Execute commands
+            _, cpu_out, _ = client.exec_command(cpu_cmd)
+            cpu_out = cpu_out.read().decode(errors='ignore')
+            _, mem_out, _ = client.exec_command(mem_cmd)
+            mem_out = mem_out.read().decode(errors='ignore')
+            disk_out = ''
+            for dcmd in disk_cmds:
+                try:
+                    _, dout, _ = client.exec_command(dcmd)
+                    tmp = dout.read().decode(errors='ignore')
+                    if tmp.strip():
+                        disk_out = tmp
+                        break
+                except Exception:
+                    continue
             client.close()
         except Exception:
             return None
 
         metrics: Dict[str, float] = {}
-        # Parse CPU from top output: "%Cpu(s):  3.0 us,  1.0 sy, ... 96.0 id"
-        m = re.search(r"(\d+[\.,]?\d*)\s*id", cpu_out)
-        if m:
+
+        # CPU usage calc from /proc/stat
+        def parse_cpu(line: str) -> Optional[tuple[int, int]]:
+            if not line.startswith('cpu '):
+                return None
+            parts = line.split()
             try:
-                idle = float(m.group(1).replace(',', '.'))
-                metrics['cpu_load_percent'] = max(0.0, min(100.0, 100.0 - idle))
+                # user nice system idle iowait irq softirq steal guest guest_nice
+                vals = list(map(int, parts[1:]))
             except ValueError:
-                pass
+                return None
+            idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+            total = sum(vals)
+            return idle, total
+
+        cpu_lines = [ln for ln in cpu_out.splitlines() if ln.startswith('cpu ')]
+        if len(cpu_lines) >= 2:
+            p1 = parse_cpu(cpu_lines[0])
+            p2 = parse_cpu(cpu_lines[1])
+            if p1 and p2:
+                idle1, total1 = p1
+                idle2, total2 = p2
+                dt_idle = max(0, idle2 - idle1)
+                dt_total = max(1, total2 - total1)
+                usage = (1.0 - (dt_idle / dt_total)) * 100.0
+                metrics['cpu_load_percent'] = max(0.0, min(100.0, usage))
+
         # Memory from /proc/meminfo
         def get_kb(key: str) -> Optional[int]:
             mm = re.search(rf"^{key}:\s+(\d+)\s+kB", mem_out, re.MULTILINE)
@@ -130,17 +160,19 @@ def fetch_device_resources(device) -> Optional[Dict[str, float]]:
             metrics['total_memory_bytes'] = mem_total
         if mem_free is not None:
             metrics['free_memory_bytes'] = mem_free
-        # Disk from df --total (fields: Filesystem,1B-blocks,Used,Available,Use%,Mounted)
+
+        # Disk from df output like: Filesystem Size Used Avail Use% Mounted
         parts = disk_out.split()
-        if len(parts) >= 5:
+        # Expect at least: FS, Size, Used, Avail, Use%, Mount
+        if len(parts) >= 6:
             try:
                 total = int(parts[1])
-                used = int(parts[2])
                 avail = int(parts[3])
                 metrics['total_storage_bytes'] = total
                 metrics['free_storage_bytes'] = avail
             except ValueError:
                 pass
+
         return metrics if metrics else None
 
     # Mikrotik path
