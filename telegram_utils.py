@@ -79,18 +79,37 @@ def send_company_telegram_message(company_id: int, text: str) -> bool:
         app = create_app()
         with app.app_context():
             settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
-            if not settings or not settings.enabled or not settings.bot_token or not settings.chat_id:
+            if not settings:
+                print(f"[TELEGRAM] No settings found for company {company_id}")
+                return False
+
+            if not settings.enabled:
+                print(f"[TELEGRAM] Telegram disabled for company {company_id}")
+                return False
+
+            if not settings.bot_token or not settings.chat_id:
+                print(f"[TELEGRAM] Missing bot_token or chat_id for company {company_id}")
                 return False
 
             url = f"https://api.telegram.org/bot{settings.bot_token}/sendMessage"
+            print(f"[TELEGRAM] Sending to company {company_id}: {url}")
+
             resp = requests.post(url, json={
                 'chat_id': settings.chat_id,
                 'text': text,
                 'parse_mode': 'HTML',
                 'disable_web_page_preview': True,
-            }, timeout=5)
-            return resp.ok
-    except Exception:
+            }, timeout=10)
+
+            if resp.ok:
+                print(f"[TELEGRAM] Message sent successfully to company {company_id}")
+                return True
+            else:
+                print(f"[TELEGRAM] Failed to send to company {company_id}: {resp.status_code} - {resp.text}")
+                return False
+
+    except Exception as e:
+        print(f"[TELEGRAM] Exception sending to company {company_id}: {e}")
         return False
 
 
@@ -102,25 +121,37 @@ def send_company_telegram_message_with_details(company_id: int, text: str) -> tu
         app = create_app()
         with app.app_context():
             settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
-            if not settings or not settings.enabled:
-                return False, 'Telegram not enabled for this company'
+            if not settings:
+                return False, f'No Telegram settings found for company {company_id}'
+
+            if not settings.enabled:
+                return False, f'Telegram disabled for company {company_id}'
 
             if not settings.bot_token or not settings.chat_id:
-                return False, 'Missing bot token or chat ID'
+                return False, f'Missing bot token or chat ID for company {company_id}'
 
             url = f"https://api.telegram.org/bot{settings.bot_token}/sendMessage"
+            print(f"[TELEGRAM] Testing message to company {company_id}")
+
             resp = requests.post(url, json={
                 'chat_id': settings.chat_id,
                 'text': text,
                 'parse_mode': 'HTML',
                 'disable_web_page_preview': True,
-            }, timeout=5)
+            }, timeout=10)
 
             if resp.ok:
-                return True, 'ok'
-            return False, resp.text
+                print(f"[TELEGRAM] Test message sent successfully to company {company_id}")
+                return True, 'Message sent successfully'
+            else:
+                error_msg = f"HTTP {resp.status_code}: {resp.text}"
+                print(f"[TELEGRAM] Failed to send test message to company {company_id}: {error_msg}")
+                return False, error_msg
+
     except Exception as exc:
-        return False, f'Exception: {exc}'
+        error_msg = f'Exception: {exc}'
+        print(f"[TELEGRAM] Exception testing message to company {company_id}: {error_msg}")
+        return False, error_msg
 
 
 def should_send_company_alert(company_id: int, alert_type: str) -> bool:

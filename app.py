@@ -885,6 +885,25 @@ def create_app() -> Flask:
 
         return render_template('company_telegram_settings.html', company=company, settings=telegram_settings)
 
+    @app.route('/admin/telegram/test/<int:company_id>')
+    @login_required
+    def test_company_telegram(company_id):
+        """Test endpoint to check Telegram configuration"""
+        if not current_user.is_superadmin:
+            return jsonify({'success': False, 'error': 'Access denied'})
+
+        from telegram_utils import send_company_telegram_message_with_details
+
+        test_message = f"🧪 Test message from Router Portal\nCompany: {company_id}\nTime: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+
+        success, message = send_company_telegram_message_with_details(company_id, test_message)
+
+        return jsonify({
+            'success': success,
+            'message': message,
+            'company_id': company_id
+        })
+
     @app.route('/messages', methods=['GET', 'POST'])
     @login_required
     def messages_page():
