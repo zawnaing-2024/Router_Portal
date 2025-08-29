@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row">
+  <div class="col-md-6">
+    <h4>Edit Fiber Monitor: {{ check.name }}</h4>
+    <form method="post" class="card card-body mb-4">
+      <div class="mb-2">
+        <label class="form-label">Monitor Name</label>
+        <input type="text" name="name" class="form-control" value="{{ check.name }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Interface Name</label>
+        <input type="text" name="interface_name" class="form-control" value="{{ check.interface_name }}" placeholder="e.g., sfp1, sfp-sfpplus1" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Router Device</label>
+        <div class="form-control-plaintext">
+          <strong>{{ device.name }}</strong> ({{ device.host }})
+        </div>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-primary" type="submit">Update Monitor</button>
+        <a href="{{ url_for('fibers_page') }}" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+  <div class="col-md-6">
+    <h5>Monitor Information</h5>
+    <div class="card">
+      <div class="card-body">
+        <dl class="row">
+          <dt class="col-sm-4">Status:</dt>
+          <dd class="col-sm-8">
+            {% if check.last_rx_dbm is not none or check.last_tx_dbm is not none %}
+              <span class="badge bg-success">Active</span>
+            {% else %}
+              <span class="badge bg-warning">No Data</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-4">Last Rx Power:</dt>
+          <dd class="col-sm-8">
+            {% if check.last_rx_dbm is not none %}
+              {{ "%.2f"|format(check.last_rx_dbm) }} dBm
+            {% else %}
+              <span class="text-muted">No data</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-4">Last Tx Power:</dt>
+          <dd class="col-sm-8">
+            {% if check.last_tx_dbm is not none %}
+              {{ "%.2f"|format(check.last_tx_dbm) }} dBm
+            {% else %}
+              <span class="text-muted">No data</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-4">Interface Status:</dt>
+          <dd class="col-sm-8">
+            {% if check.last_oper_status == 1 %}
+              <span class="badge text-bg-success">Up</span>
+            {% elif check.last_oper_status == 2 %}
+              <span class="badge text-bg-danger">Down</span>
+            {% else %}
+              <span class="text-muted">Unknown</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-4">Last Checked:</dt>
+          <dd class="col-sm-8">
+            {% if check.last_checked_at %}
+              {{ check.last_checked_at|yangon_time }} MMT
+            {% else %}
+              <span class="text-muted">Never</span>
+            {% endif %}
+          </dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

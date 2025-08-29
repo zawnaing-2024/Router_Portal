@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-md-8">
+            <h2>User Management</h2>
+        </div>
+        <div class="col-md-4 text-end">
+            <a href="{{ url_for('admin_companies') }}" class="btn btn-secondary">Manage Companies</a>
+        </div>
+    </div>
+
+    <!-- Add User Form -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Add New User</h5>
+        </div>
+        <div class="card-body">
+            <form method="post" class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Email *</label>
+                    <input type="email" name="email" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Password *</label>
+                    <input type="password" name="password" class="form-control" required minlength="6">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Role</label>
+                    <div class="form-check">
+                        <input type="checkbox" name="is_superadmin" class="form-check-input" id="is_superadmin">
+                        <label class="form-check-label" for="is_superadmin">Super Admin</label>
+                    </div>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button class="btn btn-primary w-100">Create User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Users List -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Users ({{ users|length }})</h5>
+        </div>
+        <div class="card-body">
+            {% if users %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Companies</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in users %}
+                            <tr>
+                                <td>{{ user.id }}</td>
+                                <td>{{ user.email }}</td>
+                                <td>
+                                    {% if user.is_superadmin %}
+                                        <span class="badge bg-danger">Super Admin</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Regular User</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% set company_count = [] %}
+                                    {% for uc in [] %}
+                                        {% if uc.user_id == user.id %}
+                                            {% if company_count.append(1) %}{% endif %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {{ company_count|length }}
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('admin_user', user_id=user.id) }}" class="btn btn-sm btn-outline-primary">Edit</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted mb-0">No users created yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

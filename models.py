@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
 
 
 db = SQLAlchemy()
@@ -18,6 +19,9 @@ class Device(db.Model):
     # SNMP configuration
     snmp_version = db.Column(db.String(8), nullable=False, default='v2c')
     snmp_community = db.Column(db.String(128))
+
+    # Multi-tenant ownership
+    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'))
 
     # Scheduling: manual, daily, weekly, monthly
     schedule = db.Column(db.String(16), nullable=False, default='manual')
@@ -84,6 +88,10 @@ class FiberCheck(db.Model):
     last_oper_status = db.Column(db.Integer)  # 1 up, 2 down
     last_checked_at = db.Column(db.DateTime(timezone=True))
 
+    # Alert tracking
+    alerted_down = db.Column(db.Boolean, nullable=False, default=False)
+    down_start_at = db.Column(db.DateTime(timezone=True))  # when fiber went down
+
 
 class FiberSample(db.Model):
     __tablename__ = 'fiber_samples'
@@ -99,4 +107,44 @@ class AppSetting(db.Model):
     __tablename__ = 'app_settings'
     key = db.Column(db.String(64), primary_key=True)
     value = db.Column(db.Text)
+
+
+class CompanyTelegramSetting(db.Model):
+    __tablename__ = 'company_telegram_settings'
+    id = db.Column(db.Integer, primary_key=True)
+    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False, unique=True)
+    bot_token = db.Column(db.String(255))
+    chat_id = db.Column(db.String(64))
+    group_name = db.Column(db.String(128))
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    ping_down_alerts = db.Column(db.Boolean, nullable=False, default=True)
+    fiber_down_alerts = db.Column(db.Boolean, nullable=False, default=True)
+    high_ping_alerts = db.Column(db.Boolean, nullable=False, default=True)
+    high_ping_threshold_ms = db.Column(db.Integer, nullable=False, default=90)
+
+
+class Company(db.Model):
+    __tablename__ = 'companies'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(128), unique=True, nullable=False)
+    notes = db.Column(db.Text)
+
+    devices = db.relationship('Device', backref='company', cascade='all, delete-orphan')
+    telegram_settings = db.relationship('CompanyTelegramSetting', backref='company', cascade='all, delete-orphan', uselist=False)
+
+
+class User(db.Model, UserMixin):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_superadmin = db.Column(db.Boolean, nullable=False, default=False)
+
+
+class UserCompany(db.Model):
+    __tablename__ = 'user_companies'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False)
+    role = db.Column(db.String(32), nullable=False, default='viewer')  # viewer|admin
 

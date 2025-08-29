@@ -1,0 +1,224 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-md-8">
+            <h2>Telegram Settings: {{ company.name }}</h2>
+            <p class="text-muted">Configure Telegram notifications for this company</p>
+        </div>
+        <div class="col-md-4 text-end">
+            <a href="{{ url_for('admin_companies') }}" class="btn btn-secondary">Back to Companies</a>
+        </div>
+    </div>
+
+    <!-- Telegram Settings Form -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Bot Configuration</h5>
+        </div>
+        <div class="card-body">
+            <form method="post">
+                <input type="hidden" name="action" value="save">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Bot Token</label>
+                        <input type="text" name="bot_token" class="form-control"
+                               value="{{ settings.bot_token or '' }}"
+                               placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz">
+                        <div class="form-text">Get token from @BotFather on Telegram</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Chat ID</label>
+                        <input type="text" name="chat_id" class="form-control"
+                               value="{{ settings.chat_id or '' }}"
+                               placeholder="-1001234567890">
+                        <div class="form-text">Group chat ID where messages will be sent</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Group Name (Optional)</label>
+                        <input type="text" name="group_name" class="form-control"
+                               value="{{ settings.group_name or '' }}"
+                               placeholder="My Company Alerts">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">High Ping Threshold (ms)</label>
+                        <input type="number" name="high_ping_threshold_ms" class="form-control"
+                               value="{{ settings.high_ping_threshold_ms }}"
+                               min="1" max="10000">
+                        <div class="form-text">Alert when ping exceeds this value</div>
+                    </div>
+                </div>
+
+                <!-- Alert Settings -->
+                <div class="row g-3 mt-3">
+                    <div class="col-12">
+                        <h6>Alert Types</h6>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input type="checkbox" name="enabled" class="form-check-input" id="enabled"
+                                   {% if settings.enabled %}checked{% endif %}>
+                            <label class="form-check-label" for="enabled">
+                                <strong>Enable All Alerts</strong>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input type="checkbox" name="ping_down_alerts" class="form-check-input" id="ping_down_alerts"
+                                   {% if settings.ping_down_alerts %}checked{% endif %}>
+                            <label class="form-check-label" for="ping_down_alerts">
+                                Ping Down Alerts
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input type="checkbox" name="fiber_down_alerts" class="form-check-input" id="fiber_down_alerts"
+                                   {% if settings.fiber_down_alerts %}checked{% endif %}>
+                            <label class="form-check-label" for="fiber_down_alerts">
+                                Fiber Down Alerts
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input type="checkbox" name="high_ping_alerts" class="form-check-input" id="high_ping_alerts"
+                                   {% if settings.high_ping_alerts %}checked{% endif %}>
+                            <label class="form-check-label" for="high_ping_alerts">
+                                High Ping Alerts
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="d-flex gap-2 mt-4">
+                    <button class="btn btn-primary" type="submit">Save Settings</button>
+                    <button class="btn btn-outline-secondary" type="submit" name="action" value="test">Test Message</button>
+                    <button class="btn btn-outline-info" type="submit" name="action" value="detect">Detect Chat ID</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Status Information -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Status</h5>
+        </div>
+        <div class="card-body">
+            <dl class="row">
+                <dt class="col-sm-3">Configuration:</dt>
+                <dd class="col-sm-9">
+                    {% if settings.bot_token and settings.chat_id %}
+                        <span class="badge bg-success">✅ Configured</span>
+                    {% else %}
+                        <span class="badge bg-warning">⚠️ Incomplete</span>
+                    {% endif %}
+                </dd>
+                <dt class="col-sm-3">Bot Token:</dt>
+                <dd class="col-sm-9">
+                    {% if settings.bot_token %}
+                        <span class="text-success">Set</span>
+                        <small class="text-muted">({{ settings.bot_token[:20] }}...)</small>
+                    {% else %}
+                        <span class="text-muted">Not configured</span>
+                    {% endif %}
+                </dd>
+                <dt class="col-sm-3">Chat ID:</dt>
+                <dd class="col-sm-9">
+                    {% if settings.chat_id %}
+                        <span class="text-success">{{ settings.chat_id }}</span>
+                        {% if settings.group_name %}
+                            <small class="text-muted">({{ settings.group_name }})</small>
+                        {% endif %}
+                    {% else %}
+                        <span class="text-muted">Not configured</span>
+                    {% endif %}
+                </dd>
+                <dt class="col-sm-3">Alerts Enabled:</dt>
+                <dd class="col-sm-9">
+                    {% if settings.enabled %}
+                        <span class="text-success">Yes</span>
+                        <small class="text-muted">
+                            (Ping Down: {{ 'Yes' if settings.ping_down_alerts else 'No' }},
+                             Fiber Down: {{ 'Yes' if settings.fiber_down_alerts else 'No' }},
+                             High Ping: {{ 'Yes' if settings.high_ping_alerts else 'No' }} > {{ settings.high_ping_threshold_ms }}ms)
+                        </small>
+                    {% else %}
+                        <span class="text-danger">No</span>
+                    {% endif %}
+                </dd>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Alert Information -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Alert Types & Behavior</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>🔴 <strong>DOWN Alerts</strong></h6>
+                    <ul class="small">
+                        <li><strong>Ping Down:</strong> Sent after 5 consecutive timeouts</li>
+                        <li><strong>Fiber Down:</strong> Sent when interface status changes to down</li>
+                        <li><strong>Continuous:</strong> Reminder alerts every 30 minutes while down</li>
+                        <li><strong>Device Info:</strong> Includes device name and monitor details</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <h6>🟢 <strong>Restoration Alerts</strong></h6>
+                    <ul class="small">
+                        <li><strong>Ping Restored:</strong> Sent when ping becomes reachable again</li>
+                        <li><strong>Fiber Restored:</strong> Sent when interface comes back up</li>
+                        <li><strong>Duration:</strong> Includes outage duration in alerts</li>
+                        <li><strong>Performance:</strong> Shows current RTT/power levels</li>
+                    </ul>
+                </div>
+            </div>
+            <hr>
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>⚠️ <strong>High Ping Alerts</strong></h6>
+                    <ul class="small">
+                        <li><strong>Threshold:</strong> Configurable (default: 90ms)</li>
+                        <li><strong>Real-time:</strong> Sent immediately when exceeded</li>
+                        <li><strong>Device Info:</strong> Includes actual ping value</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <h6>📊 <strong>Alert Frequency</strong></h6>
+                    <ul class="small">
+                        <li><strong>Initial:</strong> Immediate on state change</li>
+                        <li><strong>Continuous:</strong> Every 30 minutes while down</li>
+                        <li><strong>Restoration:</strong> One-time when recovered</li>
+                        <li><strong>Timezone:</strong> All times in UTC</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Instructions -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Setup Instructions</h5>
+        </div>
+        <div class="card-body">
+            <ol>
+                <li><strong>Create Bot:</strong> Message @BotFather on Telegram and create a new bot</li>
+                <li><strong>Get Token:</strong> Copy the bot token from @BotFather</li>
+                <li><strong>Create Group:</strong> Create a Telegram group for alerts</li>
+                <li><strong>Add Bot:</strong> Add your bot to the group as administrator</li>
+                <li><strong>Detect Chat ID:</strong> Send a message in the group, then click "Detect Chat ID"</li>
+                <li><strong>Test:</strong> Click "Test Message" to verify configuration</li>
+                <li><strong>Configure Alerts:</strong> Enable/disable specific alert types above</li>
+            </ol>
+        </div>
+    </div>
+</div>
+{% endblock %}

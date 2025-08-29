@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row">
+  <div class="col-md-6">
+    <h4>Edit Device: {{ device.name }}</h4>
+    <form method="post" class="card card-body mb-4">
+      <div class="mb-2">
+        <label class="form-label">Name</label>
+        <input type="text" name="name" class="form-control" value="{{ device.name }}" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Host/IP</label>
+        <input type="text" name="host" class="form-control" value="{{ device.host }}" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SSH Port</label>
+        <input type="number" name="port" class="form-control" value="{{ device.port }}" min="1" max="65535">
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Username</label>
+        <input type="text" name="username" class="form-control" value="{{ device.username }}" required>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Password <small class="text-muted">(leave blank to keep current)</small></label>
+        <input type="password" name="password" class="form-control" placeholder="Enter new password">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Backup Schedule</label>
+        <select name="schedule" class="form-select">
+          <option value="manual" {% if device.schedule == 'manual' %}selected{% endif %}>Manual</option>
+          <option value="daily" {% if device.schedule == 'daily' %}selected{% endif %}>Daily</option>
+          <option value="weekly" {% if device.schedule == 'weekly' %}selected{% endif %}>Weekly</option>
+          <option value="monthly" {% if device.schedule == 'monthly' %}selected{% endif %}>Monthly</option>
+        </select>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SNMP Version</label>
+        <select name="snmp_version" class="form-select">
+          <option value="v2c" {% if device.snmp_version == 'v2c' %}selected{% endif %}>v2c</option>
+          <option value="v3" {% if device.snmp_version == 'v3' %}selected{% endif %} disabled>v3 (coming soon)</option>
+        </select>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">SNMP Community (for v2c)</label>
+        <input type="text" name="snmp_community" class="form-control" value="{{ device.snmp_community or '' }}" placeholder="public">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Current Company</label>
+        <div class="form-control-plaintext">
+          <strong>{{ companies|selectattr('id', 'equalto', device.company_id)|first|default('Unknown')|attr('name') }}</strong>
+        </div>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-primary" type="submit">Update Device</button>
+        <a href="{{ url_for('devices_page') }}" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+  <div class="col-md-6">
+    <h5>Device Information</h5>
+    <div class="card">
+      <div class="card-body">
+        <dl class="row">
+          <dt class="col-sm-4">Status:</dt>
+          <dd class="col-sm-8">
+            {% if device.enabled %}
+              <span class="badge bg-success">Enabled</span>
+            {% else %}
+              <span class="badge bg-danger">Disabled</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-4">Last Backup:</dt>
+          <dd class="col-sm-8">
+            {% if device.last_backup_time %}
+              {{ device.last_backup_time|yangon_time }} MMT
+              <br><small class="text-muted">{{ device.last_backup_status or 'Unknown' }}</small>
+            {% else %}
+              <span class="text-muted">Never</span>
+            {% endif %}
+          </dd>
+          {% if device.last_backup_message %}
+          <dt class="col-sm-4">Backup Message:</dt>
+          <dd class="col-sm-8"><small class="text-muted">{{ device.last_backup_message }}</small></dd>
+          {% endif %}
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -9,16 +9,29 @@
   <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
       <div class="container-fluid">
-        <a class="navbar-brand" href="{{ url_for('dashboard') }}">Router Portal</a>
+        <a class="navbar-brand" href="{{ url_for('dashboard') if current_user.is_authenticated else url_for('login') }}">Router Portal</a>
+        {% if current_user.is_authenticated %}
         <div>
           <a class="btn btn-sm btn-outline-light me-2" href="{{ url_for('devices_page') }}">Devices</a>
           <a class="btn btn-sm btn-outline-light me-2" href="{{ url_for('backup_page') }}">Backups</a>
           <a class="btn btn-sm btn-outline-warning me-2" href="{{ url_for('backup_files') }}">Backup Files</a>
           <a class="btn btn-sm btn-outline-info" href="{{ url_for('pings_page') }}">Pings</a>
-          <a class="btn btn-sm btn-outline-secondary ms-2" href="{{ url_for('telegram_settings') }}">Settings</a>
           <a class="btn btn-sm btn-outline-success ms-2" href="{{ url_for('messages_page') }}">Messages</a>
           <a class="btn btn-sm btn-outline-warning ms-2" href="{{ url_for('fibers_page') }}">Fiber</a>
+          {% if current_user.is_superadmin %}
+          <div class="btn-group ms-2" role="group">
+            <button type="button" class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">
+              Admin
+            </button>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item" href="{{ url_for('admin_companies') }}">Manage Companies</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('admin_users') }}">Manage Users</a></li>
+            </ul>
+          </div>
+          {% endif %}
+          <a class="btn btn-sm btn-outline-danger ms-2" href="{{ url_for('logout') }}">Logout</a>
         </div>
+        {% endif %}
       </div>
     </nav>
     <div class="container mt-4">

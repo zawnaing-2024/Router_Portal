@@ -39,6 +39,7 @@
             <th>Tx (dBm)</th>
             <th>Oper</th>
             <th>Last</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -53,9 +54,15 @@
             <td>{% if r.oper == 1 %}<span class="badge text-bg-success">up</span>{% elif r.oper == 2 %}<span class="badge text-bg-danger">down</span>{% else %}-{% endif %}</td>
             <td>{% if r.ts %}{{ r.ts|yangon_time }} MMT{% else %}-{% endif %}</td>
             <td>
-              <form method="post" action="{{ url_for('fiber_probe', check_id=r.id) }}">
-                <button class="btn btn-sm btn-outline-primary">Probe</button>
-              </form>
+              <div class="btn-group" role="group">
+                <a href="{{ url_for('edit_fiber', check_id=r.id) }}" class="btn btn-sm btn-outline-secondary me-1">Edit</a>
+                <form method="post" action="{{ url_for('fiber_probe', check_id=r.id) }}" class="d-inline">
+                  <button class="btn btn-sm btn-outline-primary me-1">Probe</button>
+                </form>
+                <form method="post" action="{{ url_for('delete_fiber', check_id=r.id) }}" class="d-inline" onsubmit="return confirm('Delete fiber monitor {{ r.name }}?');">
+                  <button class="btn btn-sm btn-outline-danger">Delete</button>
+                </form>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -84,6 +91,9 @@
         <div class="col-auto">
           <button class="btn btn-sm btn-outline-primary">Apply</button>
         </div>
+        <div class="col-auto">
+          <small id="fiberLastUpdate" class="text-muted align-self-center">Last update: -</small>
+        </div>
       </form>
       <div class="mt-2" style="height: 220px;">
         <canvas id="fiberChart"></canvas>
@@ -97,34 +107,152 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
 <script>
   let fiberChart;
+  let fiberUpdateInterval;
+
   async function loadFiberChart() {
     const id = document.getElementById('fiberCheckId')?.value;
     if (!id) return;
+
     const since = document.getElementById('fiberSince').value;
-    const res = await fetch(`/api/fibers/samples?check_id=${id}&since_seconds=${since}`, {cache:'no-store'});
-    const pts = await res.json();
-    const labels = pts.map(p => p.ts);
-    const rx = pts.map(p => p.rx);
-    const tx = pts.map(p => p.tx);
-    if (!fiberChart) {
-      const ctx = document.getElementById('fiberChart').getContext('2d');
-      fiberChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels, datasets: [
-          { label: 'Rx (dBm)', data: rx, borderColor: '#dc3545', tension: 0.2, pointRadius: 0 },
-          { label: 'Tx (dBm)', data: tx, borderColor: '#0d6efd', tension: 0.2, pointRadius: 0 }
-        ] },
-        options: { scales: { x: { type: 'time', time: { unit: 'minute' } } }, animation: false, responsive: true, maintainAspectRatio: false }
+    try {
+      const res = await fetch(`/api/fibers/samples?check_id=${id}&since_seconds=${since}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
       });
-    } else {
-      fiberChart.data.labels = labels;
-      fiberChart.data.datasets[0].data = rx;
-      fiberChart.data.datasets[1].data = tx;
-      fiberChart.update('none');
+
+      if (!res.ok) {
+        console.error('Failed to fetch fiber data:', res.status);
+        return;
+      }
+
+      const pts = await res.json();
+      if (pts.error) {
+        console.error('API Error:', pts.error);
+        return;
+      }
+
+      const labels = pts.map(p => p.ts);
+      const rx = pts.map(p => p.rx);
+      const tx = pts.map(p => p.tx);
+
+      if (!fiberChart) {
+        const ctx = document.getElementById('fiberChart').getContext('2d');
+        fiberChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: 'Rx (dBm)',
+                data: rx,
+                borderColor: '#dc3545',
+                backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                tension: 0.2,
+                pointRadius: 0,
+                fill: false
+              },
+              {
+                label: 'Tx (dBm)',
+                data: tx,
+                borderColor: '#0d6efd',
+                backgroundColor: 'rgba(13, 110, 253, 0.1)',
+                tension: 0.2,
+                pointRadius: 0,
+                fill: false
+              }
+            ]
+          },
+          options: {
+            scales: {
+              x: {
+                type: 'time',
+                time: {
+                  unit: 'minute',
+                  displayFormats: {
+                    minute: 'HH:mm:ss'
+                  }
+                },
+                title: {
+                  display: true,
+                  text: 'Time (MMT)'
+                },
+
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: 'Power (dBm)'
+                },
+                beginAtZero: false
+              }
+            },
+            animation: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top'
+              }
+            }
+          }
+        });
+      } else {
+        fiberChart.data.labels = labels;
+        fiberChart.data.datasets[0].data = rx;
+        fiberChart.data.datasets[1].data = tx;
+        fiberChart.update('none');
+      }
+
+      // Update last update timestamp using server time (get from response or calculate)
+      const now = new Date();
+      // Get the latest data timestamp to show consistent time
+      const latestTimestamp = pts.length > 0 ? new Date(pts[pts.length - 1].ts) : now;
+
+      // Display in Asia/Yangon timezone
+      const options = {
+        hour12: false,
+        timeZone: 'Asia/Yangon',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      };
+
+      document.getElementById('fiberLastUpdate').textContent =
+        'Last update: ' + latestTimestamp.toLocaleString('en-US', options);
+
+    } catch (error) {
+      console.error('Error loading fiber chart:', error);
     }
   }
-  setInterval(loadFiberChart, 60000);
+
+  function startFiberUpdates() {
+    // Clear any existing interval
+    if (fiberUpdateInterval) {
+      clearInterval(fiberUpdateInterval);
+    }
+    // Start new interval - update every 60 seconds to match data collection
+    fiberUpdateInterval = setInterval(loadFiberChart, 60000);
+  }
+
+  // Initial load
   loadFiberChart();
+
+  // Start regular updates
+  startFiberUpdates();
+
+  // Restart updates when monitor selection changes
+  document.getElementById('fiberCheckId')?.addEventListener('change', function() {
+    loadFiberChart();
+    startFiberUpdates();
+  });
+
+  document.getElementById('fiberSince')?.addEventListener('change', function() {
+    loadFiberChart();
+  });
 </script>
 {% endblock %}
 

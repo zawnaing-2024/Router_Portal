@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-md-8">
+            <h2>Company Management</h2>
+        </div>
+        <div class="col-md-4 text-end">
+            <a href="{{ url_for('admin_users') }}" class="btn btn-secondary">Manage Users</a>
+        </div>
+    </div>
+
+    <!-- Add Company Form -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Add New Company</h5>
+        </div>
+        <div class="card-body">
+            <form method="post" class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Company Name *</label>
+                    <input type="text" name="name" class="form-control" required>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Notes</label>
+                    <input type="text" name="notes" class="form-control" placeholder="Optional notes about the company">
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button class="btn btn-primary w-100">Create Company</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Companies List -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Companies ({{ companies|length }})</h5>
+        </div>
+        <div class="card-body">
+            {% if companies %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Notes</th>
+                                <th>Users</th>
+                                <th>Devices</th>
+                                <th>Telegram</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for company in companies %}
+                            <tr>
+                                <td>{{ company.id }}</td>
+                                <td><strong>{{ company.name }}</strong></td>
+                                <td>{{ company.notes or '-' }}</td>
+                                <td>
+                                    {% set user_count = [] %}
+                                    {% for uc in [] %}
+                                        {% if uc.company_id == company.id %}
+                                            {% if user_count.append(1) %}{% endif %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {{ user_count|length }}
+                                </td>
+                                <td>
+                                    {% set device_count = [] %}
+                                    {% for device in [] %}
+                                        {% if device.company_id == company.id %}
+                                            {% if device_count.append(1) %}{% endif %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {{ device_count|length }}
+                                </td>
+                                <td>
+                                    {% set telegram_status = [] %}
+                                    {% for setting in [] %}
+                                        {% if setting.company_id == company.id %}
+                                            {% if setting.bot_token and setting.chat_id %}
+                                                {% if telegram_status.append('✅ Configured') %}{% endif %}
+                                            {% else %}
+                                                {% if telegram_status.append('⚠️ Not Configured') %}{% endif %}
+                                            {% endif %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {{ telegram_status[0] if telegram_status else '⚠️ Not Configured' }}
+                                </td>
+                                <td>
+                                    <div class="btn-group" role="group">
+                                        <a href="{{ url_for('admin_company', company_id=company.id) }}" class="btn btn-sm btn-outline-primary">Edit</a>
+                                        <a href="{{ url_for('company_telegram_settings', company_id=company.id) }}" class="btn btn-sm btn-outline-info" title="Telegram Settings">
+                                            <i class="bi bi-telegram"></i> Telegram
+                                        </a>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted mb-0">No companies created yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

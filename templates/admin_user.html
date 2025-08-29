@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <div class="row">
+        <div class="col-md-8">
+            <h2>Edit User: {{ user.email }}</h2>
+        </div>
+        <div class="col-md-4 text-end">
+            <a href="{{ url_for('admin_users') }}" class="btn btn-secondary">Back to Users</a>
+        </div>
+    </div>
+
+    <!-- User Details -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">User Details</h5>
+        </div>
+        <div class="card-body">
+            <form method="post">
+                <input type="hidden" name="action" value="update">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Email *</label>
+                        <input type="email" name="email" class="form-control" value="{{ user.email }}" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Role</label>
+                        <div class="form-check">
+                            <input type="checkbox" name="is_superadmin" class="form-check-input" id="is_superadmin" {% if user.is_superadmin %}checked{% endif %}>
+                            <label class="form-check-label" for="is_superadmin">Super Admin</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-primary">Update User</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Company Assignments -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Company Assignments ({{ assigned_companies|length }})</h5>
+        </div>
+        <div class="card-body">
+            <!-- Current Assignments -->
+            {% if assigned_companies %}
+                <h6>Current Assignments:</h6>
+                <div class="table-responsive mb-4">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Company</th>
+                                <th>Role</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in assigned_companies %}
+                            <tr>
+                                <td>{{ item.company.name }}</td>
+                                <td>
+                                    <span class="badge bg-info">{{ item.role|title }}</span>
+                                </td>
+                                <td>
+                                    <form method="post" class="d-inline">
+                                        <input type="hidden" name="action" value="remove_company">
+                                        <input type="hidden" name="company_id" value="{{ item.company.id }}">
+                                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this company assignment?')">Remove</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% endif %}
+
+            <!-- Add New Assignment -->
+            <h6>{% if assigned_companies %}Add Another{% else %}Assign to Company{% endif %}:</h6>
+            <form method="post">
+                <input type="hidden" name="action" value="assign_company">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Company</label>
+                        <select name="company_id" class="form-select" required>
+                            <option value="">Select Company</option>
+                            {% for company in companies %}
+                            <option value="{{ company.id }}">{{ company.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Role</label>
+                        <select name="role" class="form-select" required>
+                            <option value="viewer">Viewer</option>
+                            <option value="editor">Editor</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn btn-success w-100">Assign</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete User -->
+    {% if user.id != current_user.id %}
+    <div class="card mt-4 border-danger">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">Danger Zone</h5>
+        </div>
+        <div class="card-body">
+            <p class="text-danger mb-3">
+                <strong>Warning:</strong> Deleting this user will remove all company assignments.
+                This action cannot be undone.
+            </p>
+            <form method="post" onsubmit="return confirm('Are you sure you want to delete this user?')">
+                <input type="hidden" name="action" value="delete">
+                <button class="btn btn-danger">Delete User</button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

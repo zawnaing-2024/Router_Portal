@@ -6,12 +6,14 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 from flask import send_from_directory
 from flask import jsonify
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from models import db, Device, ResourceMetric
 from models import PingCheck
 from models import PingSample
 from models import FiberCheck, FiberSample
-from models import AppSetting
+from models import AppSetting, User, Company, UserCompany, CompanyTelegramSetting
 from scheduler import scheduler, add_or_update_backup_job, remove_backup_job, start_monitoring_job
 from netmiko_utils import perform_manual_backup
 from telegram_utils import send_telegram_message, send_telegram_message_with_details
@@ -83,6 +85,14 @@ def _run_sqlite_migrations() -> None:
                     conn.exec_driver_sql("ALTER TABLE devices ADD COLUMN snmp_community VARCHAR(128)")
             except Exception:
                 pass
+            # Ensure devices has company_id (multi-tenant)
+            try:
+                result = conn.exec_driver_sql("PRAGMA table_info(devices)")
+                dcols = {row[1] for row in result}
+                if 'company_id' not in dcols:
+                    conn.exec_driver_sql("ALTER TABLE devices ADD COLUMN company_id INTEGER")
+            except Exception:
+                pass
             # Ensure fiber tables
             conn.exec_driver_sql(
                 "CREATE TABLE IF NOT EXISTS fiber_checks (\n"
@@ -112,6 +122,59 @@ def _run_sqlite_migrations() -> None:
                 " value TEXT\n"
                 ")"
             )
+            # Ensure multi-tenant/auth tables
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS companies (\n"
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                " name VARCHAR(128) UNIQUE NOT NULL,\n"
+                " notes TEXT\n"
+                ")"
+            )
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS users (\n"
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                " email VARCHAR(255) UNIQUE NOT NULL,\n"
+                " password_hash VARCHAR(255) NOT NULL,\n"
+                " is_superadmin BOOLEAN NOT NULL DEFAULT 0\n"
+                ")"
+            )
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS user_companies (\n"
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                " user_id INTEGER NOT NULL,\n"
+                " company_id INTEGER NOT NULL,\n"
+                " role VARCHAR(32) NOT NULL DEFAULT 'viewer'\n"
+                ")"
+            )
+            # Company-specific Telegram settings
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS company_telegram_settings (\n"
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                " company_id INTEGER NOT NULL UNIQUE,\n"
+                " bot_token VARCHAR(255),\n"
+                " chat_id VARCHAR(64),\n"
+                " group_name VARCHAR(128),\n"
+                " enabled BOOLEAN NOT NULL DEFAULT 1,\n"
+                " ping_down_alerts BOOLEAN NOT NULL DEFAULT 1,\n"
+                " fiber_down_alerts BOOLEAN NOT NULL DEFAULT 1,\n"
+                " high_ping_alerts BOOLEAN NOT NULL DEFAULT 1,\n"
+                " high_ping_threshold_ms INTEGER NOT NULL DEFAULT 90,\n"
+                " FOREIGN KEY(company_id) REFERENCES companies(id)\n"
+                ")"
+            )
+            # Ensure fiber_checks has alert tracking fields
+            try:
+                result = conn.exec_driver_sql("PRAGMA table_info(fiber_checks)")
+                fcols = {row[1] for row in result}
+                if 'alerted_down' not in fcols:
+                    conn.exec_driver_sql("ALTER TABLE fiber_checks ADD COLUMN alerted_down BOOLEAN NOT NULL DEFAULT 0")
+                if 'down_start_at' not in fcols:
+                    conn.exec_driver_sql("ALTER TABLE fiber_checks ADD COLUMN down_start_at DATETIME")
+            except Exception:
+                pass
+
+            # Ensure ping_checks and fiber_checks have company_id through device relationship
+            # (This is handled via joins in queries, no additional columns needed)
     except Exception:
         # Do not block app start if migration fails
         pass
@@ -119,6 +182,16 @@ def _run_sqlite_migrations() -> None:
 
 load_dotenv()
 
+
+def get_user_company_ids(user_id: int) -> list:
+    """Get list of company IDs that a user has access to."""
+    if User.query.get(user_id).is_superadmin:
+        # Super admins can access all companies
+        return [c.id for c in Company.query.all()]
+
+    # Regular users get their assigned companies
+    user_companies = UserCompany.query.filter_by(user_id=user_id).all()
+    return [uc.company_id for uc in user_companies]
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -134,6 +207,18 @@ def create_app() -> Flask:
     }
 
     db.init_app(app)
+
+    # Auth setup
+    login_manager = LoginManager()
+    login_manager.login_view = 'login'
+    login_manager.init_app(app)
+
+    @login_manager.user_loader
+    def load_user(user_id: str):
+        try:
+            return User.query.get(int(user_id))
+        except Exception:
+            return None
 
     # Ensure backups directory exists
     os.makedirs(os.path.join(app.root_path, 'backups'), exist_ok=True)
@@ -151,13 +236,17 @@ def create_app() -> Flask:
         except Exception:
             pass
 
-    # Start scheduler and jobs
-    start_monitoring_job(app)
-
-    # Create/update backup jobs for all existing devices on startup
+    # Create/update backup jobs for all existing devices on startup (after migrations)
     with app.app_context():
-        for device in Device.query.all():
+        try:
+            devices = Device.query.all()
+        except Exception:
+            devices = []
+        for device in devices:
             add_or_update_backup_job(device)
+
+    # Start scheduler and jobs (after preparing device jobs)
+    start_monitoring_job(app)
 
     @app.template_filter('yangon_time')
     def yangon_time(dt):
@@ -171,8 +260,13 @@ def create_app() -> Flask:
         return dt.astimezone(yangon).strftime('%Y-%m-%d %H:%M:%S')
 
     @app.route('/')
+    @login_required
     def dashboard():
-        devices = Device.query.order_by(Device.name.asc()).all()
+        # Get user's company IDs
+        user_company_ids = get_user_company_ids(current_user.id)
+
+        # Filter devices by user's companies
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
         latest_metrics_by_device = {}
         for device in devices:
             latest = (
@@ -199,9 +293,12 @@ def create_app() -> Flask:
                     db.session.commit()
             latest_metrics_by_device[device.id] = latest
 
-        # Module last update time: latest ResourceMetric timestamp across all devices
+        # Module last update time: latest ResourceMetric timestamp across user's devices
         last_metrics_update = (
-            db.session.query(db.func.max(ResourceMetric.timestamp)).scalar()
+            db.session.query(db.func.max(ResourceMetric.timestamp))
+            .join(Device, ResourceMetric.device_id == Device.id)
+            .filter(Device.company_id.in_(user_company_ids))
+            .scalar()
         )
         return render_template(
             'dashboard.html',
@@ -211,7 +308,11 @@ def create_app() -> Flask:
         )
 
     @app.route('/devices', methods=['GET', 'POST'])
+    @login_required
     def devices_page():
+        # Get user's company IDs
+        user_company_ids = get_user_company_ids(current_user.id)
+
         if request.method == 'POST':
             name = request.form.get('name', '').strip()
             host = request.form.get('host', '').strip()
@@ -219,9 +320,19 @@ def create_app() -> Flask:
             password = request.form.get('password', '').strip()
             port = request.form.get('port', '22').strip()
             schedule = request.form.get('schedule', 'manual')
+            company_id = request.form.get('company_id')
 
             if not name or not host or not username or not password:
                 flash('All fields except port are required.', 'danger')
+                return redirect(url_for('devices_page'))
+
+            if not company_id:
+                flash('Please select a company.', 'danger')
+                return redirect(url_for('devices_page'))
+
+            # Check if user has access to selected company
+            if int(company_id) not in user_company_ids:
+                flash('You do not have access to the selected company.', 'danger')
                 return redirect(url_for('devices_page'))
 
             try:
@@ -240,6 +351,7 @@ def create_app() -> Flask:
                 enabled=True,
                 snmp_version=request.form.get('snmp_version','v2c'),
                 snmp_community=request.form.get('snmp_community') or None,
+                company_id=int(company_id),
             )
             db.session.add(device)
             db.session.commit()
@@ -249,12 +361,80 @@ def create_app() -> Flask:
             flash('Device added.', 'success')
             return redirect(url_for('devices_page'))
 
-        devices = Device.query.order_by(Device.name.asc()).all()
-        return render_template('devices.html', devices=devices)
+        # Filter devices by user's companies
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
+
+        # Get companies user can access for device creation
+        user_companies = Company.query.filter(Company.id.in_(user_company_ids)).order_by(Company.name.asc()).all()
+
+        return render_template('devices.html', devices=devices, companies=user_companies)
+
+    @app.route('/devices/edit/<int:device_id>', methods=['GET', 'POST'])
+    @login_required
+    def edit_device(device_id: int):
+        device = Device.query.get_or_404(device_id)
+
+        # Check if user has access to the device's company
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            flash('You do not have access to this device.', 'danger')
+            return redirect(url_for('devices_page'))
+
+        if request.method == 'POST':
+            name = request.form.get('name', '').strip()
+            host = request.form.get('host', '').strip()
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '').strip()
+            port = request.form.get('port', '22').strip()
+            schedule = request.form.get('schedule', 'manual')
+            snmp_version = request.form.get('snmp_version', 'v2c')
+            snmp_community = request.form.get('snmp_community') or None
+
+            if not name or not host or not username:
+                flash('Name, host and username are required.', 'danger')
+                return redirect(url_for('edit_device', device_id=device_id))
+
+            try:
+                port_int = int(port)
+            except ValueError:
+                flash('Port must be a number.', 'danger')
+                return redirect(url_for('edit_device', device_id=device_id))
+
+            # Update device
+            device.name = name
+            device.host = host
+            device.username = username
+            if password:  # Only update password if provided
+                device.password = password
+            device.port = port_int
+            device.schedule = schedule
+            device.snmp_version = snmp_version
+            device.snmp_community = snmp_community
+
+            db.session.commit()
+
+            # Update backup job if schedule changed
+            add_or_update_backup_job(device)
+
+            flash('Device updated.', 'success')
+            return redirect(url_for('devices_page'))
+
+        # Get companies user can access for device reassignment
+        user_companies = Company.query.filter(Company.id.in_(user_company_ids)).order_by(Company.name.asc()).all()
+
+        return render_template('edit_device.html', device=device, companies=user_companies)
 
     @app.route('/devices/delete/<int:device_id>', methods=['POST'])
+    @login_required
     def delete_device(device_id: int):
         device = Device.query.get_or_404(device_id)
+
+        # Check if user has access to the device's company
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            flash('You do not have access to this device.', 'danger')
+            return redirect(url_for('devices_page'))
+
         remove_backup_job(device_id)
         ResourceMetric.query.filter_by(device_id=device_id).delete()
         db.session.delete(device)
@@ -263,13 +443,24 @@ def create_app() -> Flask:
         return redirect(url_for('devices_page'))
 
     @app.route('/backup', methods=['GET'])
+    @login_required
     def backup_page():
-        devices = Device.query.order_by(Device.name.asc()).all()
+        # Get user's company IDs
+        user_company_ids = get_user_company_ids(current_user.id)
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
         return render_template('backup.html', devices=devices)
 
     @app.route('/backup/manual/<int:device_id>', methods=['POST'])
+    @login_required
     def manual_backup(device_id: int):
         device = Device.query.get_or_404(device_id)
+
+        # Check if user has access to the device's company
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            flash('You do not have access to this device.', 'danger')
+            return redirect(url_for('backup_page'))
+
         success, message = perform_manual_backup(device)
         device.last_backup_status = 'success' if success else 'fail'
         device.last_backup_time = datetime.now(timezone.utc)
@@ -279,8 +470,16 @@ def create_app() -> Flask:
         return redirect(url_for('backup_page'))
 
     @app.route('/backup/schedule/<int:device_id>', methods=['POST'])
+    @login_required
     def update_schedule(device_id: int):
         device = Device.query.get_or_404(device_id)
+
+        # Check if user has access to the device's company
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            flash('You do not have access to this device.', 'danger')
+            return redirect(url_for('backup_page'))
+
         schedule = request.form.get('schedule', 'manual')
         if schedule not in {'manual', 'daily', 'weekly', 'monthly'}:
             flash('Invalid schedule.', 'danger')
@@ -292,26 +491,64 @@ def create_app() -> Flask:
         return redirect(url_for('backup_page'))
 
     @app.route('/backup/files')
+    @login_required
     def backup_files():
-        # List backups grouped by date folder
+        # Get user's accessible device names
+        user_company_ids = get_user_company_ids(current_user.id)
+        user_devices = Device.query.filter(Device.company_id.in_(user_company_ids)).all()
+        user_device_names = {device.name for device in user_devices}
+
+        # List backups grouped by date folder, filtered by user's devices
         backups_root = os.path.join(app.root_path, 'backups')
         date_folders = []
         if os.path.isdir(backups_root):
             for entry in sorted(os.listdir(backups_root)):
                 full = os.path.join(backups_root, entry)
                 if os.path.isdir(full):
-                    files = sorted([f for f in os.listdir(full) if f.endswith('.backup')])
-                    date_folders.append({'date': entry, 'files': files})
+                    # Filter files to only show backups for user's devices
+                    all_files = sorted([f for f in os.listdir(full) if f.endswith('.backup')])
+                    user_files = []
+                    for file in all_files:
+                        # Extract device name from filename (format: device_name_DDMMYYHH.backup)
+                        device_name = '_'.join(file.split('_')[:-1])  # Remove the date part
+                        if device_name in user_device_names:
+                            user_files.append(file)
+                    if user_files:  # Only include date folders that have files for user's devices
+                        date_folders.append({'date': entry, 'files': user_files})
         return render_template('backup_files.html', date_folders=date_folders)
 
     @app.route('/backup/download/<date>/<filename>')
+    @login_required
     def download_backup(date: str, filename: str):
+        # Check if user has access to this backup file
+        user_company_ids = get_user_company_ids(current_user.id)
+        user_devices = Device.query.filter(Device.company_id.in_(user_company_ids)).all()
+        user_device_names = {device.name for device in user_devices}
+
+        # Extract device name from filename
+        device_name = '_'.join(filename.split('_')[:-1])
+        if device_name not in user_device_names:
+            flash('You do not have access to this backup file.', 'danger')
+            return redirect(url_for('backup_files'))
+
         backups_root = os.path.join(app.root_path, 'backups')
         directory = os.path.join(backups_root, date)
         return send_from_directory(directory=directory, path=filename, as_attachment=True)
 
     @app.route('/backup/delete/<date>/<filename>', methods=['POST'])
+    @login_required
     def delete_backup_file(date: str, filename: str):
+        # Check if user has access to this backup file
+        user_company_ids = get_user_company_ids(current_user.id)
+        user_devices = Device.query.filter(Device.company_id.in_(user_company_ids)).all()
+        user_device_names = {device.name for device in user_devices}
+
+        # Extract device name from filename
+        device_name = '_'.join(filename.split('_')[:-1])
+        if device_name not in user_device_names:
+            flash('You do not have access to this backup file.', 'danger')
+            return redirect(url_for('backup_files'))
+
         backups_root = os.path.join(app.root_path, 'backups')
         directory = os.path.join(backups_root, date)
         target = os.path.join(directory, filename)
@@ -326,8 +563,12 @@ def create_app() -> Flask:
         return redirect(url_for('backup_files'))
 
     @app.route('/pings', methods=['GET', 'POST'])
+    @login_required
     def pings_page():
-        devices = Device.query.order_by(Device.name.asc()).all()
+        # Get user's company IDs
+        user_company_ids = get_user_company_ids(current_user.id)
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
+
         if request.method == 'POST':
             name = request.form.get('name', '').strip()
             device_id = request.form.get('device_id')
@@ -344,6 +585,12 @@ def create_app() -> Flask:
                 flash('Invalid device selection.', 'danger')
                 return redirect(url_for('pings_page'))
 
+            # Check if user has access to the selected device
+            device = Device.query.get(device_id_int)
+            if not device or device.company_id not in user_company_ids:
+                flash('You do not have access to the selected device.', 'danger')
+                return redirect(url_for('pings_page'))
+
             check = PingCheck(
                 name=name,
                 device_id=device_id_int,
@@ -356,7 +603,8 @@ def create_app() -> Flask:
             flash('Ping monitor added.', 'success')
             return redirect(url_for('pings_page'))
 
-        checks = PingCheck.query.all()
+        # Filter ping checks by user's companies through device relationship
+        checks = PingCheck.query.join(Device).filter(Device.company_id.in_(user_company_ids)).all()
         # Build rows with device name
         device_by_id = {d.id: d for d in devices}
         rows = []
@@ -372,18 +620,69 @@ def create_app() -> Flask:
             })
         return render_template('pings.html', devices=devices, rows=rows)
 
+    @app.route('/pings/edit/<int:check_id>', methods=['GET', 'POST'])
+    @login_required
+    def edit_ping(check_id: int):
+        check = PingCheck.query.get_or_404(check_id)
+
+        # Check if user has access to the device's company
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this ping monitor.', 'danger')
+            return redirect(url_for('pings_page'))
+
+        if request.method == 'POST':
+            name = request.form.get('name', '').strip()
+            target_ip = request.form.get('target_ip', '').strip()
+            source_ip = request.form.get('source_ip', '').strip() or None
+            source_interface = request.form.get('source_interface', '').strip() or None
+
+            if not name or not target_ip:
+                flash('Name and target IP are required.', 'danger')
+                return redirect(url_for('edit_ping', check_id=check_id))
+
+            # Update ping check
+            check.name = name
+            check.target_ip = target_ip
+            check.source_ip = source_ip
+            check.source_interface = source_interface
+
+            db.session.commit()
+            flash('Ping monitor updated.', 'success')
+            return redirect(url_for('pings_page'))
+
+        return render_template('edit_ping.html', check=check, device=device)
+
     @app.route('/pings/delete/<int:check_id>', methods=['POST'])
+    @login_required
     def delete_ping(check_id: int):
         check = PingCheck.query.get_or_404(check_id)
+
+        # Check if user has access to the device's company
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this ping monitor.', 'danger')
+            return redirect(url_for('pings_page'))
+
         db.session.delete(check)
         db.session.commit()
         flash('Ping monitor deleted.', 'success')
         return redirect(url_for('pings_page'))
 
     @app.route('/pings/notify/<int:check_id>', methods=['POST'])
+    @login_required
     def notify_ping(check_id: int):
         check = PingCheck.query.get_or_404(check_id)
+
+        # Check if user has access to the device's company
         device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this ping monitor.', 'danger')
+            return redirect(url_for('pings_page'))
+
         status = f"{check.last_rtt_ms:.1f} ms" if check.last_rtt_ms is not None else 'Timeout'
         sent, info = send_telegram_message_with_details(
             text=(
@@ -398,9 +697,11 @@ def create_app() -> Flask:
         return redirect(url_for('pings_page'))
 
     @app.route('/api/pings')
+    @login_required
     def api_pings():
         # Read-only endpoint; scheduler updates values.
-        checks = PingCheck.query.all()
+        user_company_ids = get_user_company_ids(current_user.id)
+        checks = PingCheck.query.join(Device).filter(Device.company_id.in_(user_company_ids)).all()
         def to_display_time(dt):
             # Reuse same logic as yangon_time filter
             import pytz
@@ -422,11 +723,23 @@ def create_app() -> Flask:
         return jsonify(data)
 
     @app.route('/api/pings/samples')
+    @login_required
     def api_ping_samples():
         try:
             check_id = int(request.args.get('check_id'))
         except (TypeError, ValueError):
             return jsonify({'error': 'check_id required'}), 400
+
+        # Check if user has access to this ping check
+        check = PingCheck.query.get(check_id)
+        if not check:
+            return jsonify({'error': 'ping check not found'}), 404
+
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            return jsonify({'error': 'access denied'}), 403
+
         # Filters: since (seconds), limit N points
         since_seconds = request.args.get('since_seconds')
         limit = request.args.get('limit')
@@ -445,9 +758,15 @@ def create_app() -> Flask:
             except ValueError:
                 pass
         samples = list(reversed(q.all()))
+
+        # Convert timestamps to Asia/Yangon timezone for consistency
+        import pytz
+        yangon_tz = pytz.timezone('Asia/Yangon')
+
         return jsonify([
             {
-                'ts': s.timestamp.isoformat(),
+                'ts': (s.timestamp.astimezone(yangon_tz) if s.timestamp.tzinfo else
+                       pytz.utc.localize(s.timestamp).astimezone(yangon_tz)).isoformat(),
                 'rtt_ms': s.rtt_ms,
             }
             for s in samples
@@ -470,62 +789,79 @@ def create_app() -> Flask:
         for k, v in updates.items():
             os.environ[k] = v
 
-    @app.route('/settings/telegram', methods=['GET', 'POST'])
-    def telegram_settings():
-        def get_setting(k: str) -> str:
-            rec = AppSetting.query.get(k)
-            return rec.value.strip() if rec and rec.value else ''
-        token = get_setting('TELEGRAM_BOT_TOKEN') or (os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
-        chat_id = get_setting('TELEGRAM_CHAT_ID') or (os.environ.get('TELEGRAM_CHAT_ID') or '').strip()
-        group_name = get_setting('TELEGRAM_GROUP_NAME') or (os.environ.get('TELEGRAM_GROUP_NAME') or '').strip()
+    @app.route('/admin/telegram/<int:company_id>', methods=['GET', 'POST'])
+    @login_required
+    def company_telegram_settings(company_id):
+        # Only super admins can manage telegram settings
+        if not current_user.is_superadmin:
+            flash('Access denied. Only super administrators can manage Telegram settings.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        company = Company.query.get_or_404(company_id)
+
+        # Get or create telegram settings for this company
+        telegram_settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
+        if not telegram_settings:
+            telegram_settings = CompanyTelegramSetting(company_id=company_id)
+            db.session.add(telegram_settings)
+            db.session.commit()
 
         if request.method == 'POST':
             action = request.form.get('action')
-            form_token = request.form.get('token', '').strip()
-            form_chat = request.form.get('chat_id', '').strip()
-            form_group = request.form.get('group_name', '').strip()
 
             if action == 'save':
-                # Save to DB settings (primary)
-                for k, v in {
-                    'TELEGRAM_BOT_TOKEN': form_token,
-                    'TELEGRAM_CHAT_ID': form_chat,
-                    'TELEGRAM_GROUP_NAME': form_group,
-                }.items():
-                    rec = AppSetting.query.get(k)
-                    if rec:
-                        rec.value = v
-                    else:
-                        db.session.add(AppSetting(key=k, value=v))
+                # Update settings
+                telegram_settings.bot_token = request.form.get('bot_token', '').strip()
+                telegram_settings.chat_id = request.form.get('chat_id', '').strip()
+                telegram_settings.group_name = request.form.get('group_name', '').strip()
+                telegram_settings.enabled = request.form.get('enabled') == 'on'
+                telegram_settings.ping_down_alerts = request.form.get('ping_down_alerts') == 'on'
+                telegram_settings.fiber_down_alerts = request.form.get('fiber_down_alerts') == 'on'
+                telegram_settings.high_ping_alerts = request.form.get('high_ping_alerts') == 'on'
+                try:
+                    telegram_settings.high_ping_threshold_ms = int(request.form.get('high_ping_threshold_ms', '90'))
+                except ValueError:
+                    telegram_settings.high_ping_threshold_ms = 90
+
                 db.session.commit()
-                # Also mirror to env to avoid restart needs
-                for k, v in [('TELEGRAM_BOT_TOKEN', form_token), ('TELEGRAM_CHAT_ID', form_chat), ('TELEGRAM_GROUP_NAME', form_group)]:
-                    if v:
-                        os.environ[k] = v
-                flash('Telegram settings saved.', 'success')
-                return redirect(url_for('telegram_settings'))
+                flash(f'Telegram settings for {company.name} saved.', 'success')
+                return redirect(url_for('company_telegram_settings', company_id=company_id))
 
-            if action == 'test':
-                # Prefer form values if present
-                use_token = (form_token or get_setting('TELEGRAM_BOT_TOKEN') or token)
-                use_chat = (form_chat or get_setting('TELEGRAM_CHAT_ID') or chat_id)
-                if not use_token or not use_chat:
-                    flash('Token and Chat ID are required to send test.', 'danger')
-                    return redirect(url_for('telegram_settings'))
-                os.environ['TELEGRAM_BOT_TOKEN'] = use_token
-                os.environ['TELEGRAM_CHAT_ID'] = use_chat
-                ok, info = send_telegram_message_with_details('Router Portal test message ✅')
-                flash('Test sent.' if ok else f'Test failed: {info}', 'success' if ok else 'danger')
-                return redirect(url_for('telegram_settings'))
+            elif action == 'test':
+                if not telegram_settings.bot_token or not telegram_settings.chat_id:
+                    flash('Bot token and Chat ID are required to send test message.', 'danger')
+                    return redirect(url_for('company_telegram_settings', company_id=company_id))
 
-            if action == 'detect':
-                use_token = form_token or token
-                if not use_token:
-                    flash('Provide bot token to detect chat id.', 'danger')
-                    return redirect(url_for('telegram_settings'))
+                # Set environment variables temporarily for testing
+                original_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+                original_chat = os.environ.get('TELEGRAM_CHAT_ID')
+
+                os.environ['TELEGRAM_BOT_TOKEN'] = telegram_settings.bot_token
+                os.environ['TELEGRAM_CHAT_ID'] = telegram_settings.chat_id
+
+                ok, info = send_telegram_message_with_details(f'🧪 Test message from {company.name} ✅')
+
+                # Restore original environment
+                if original_token:
+                    os.environ['TELEGRAM_BOT_TOKEN'] = original_token
+                else:
+                    os.environ.pop('TELEGRAM_BOT_TOKEN', None)
+                if original_chat:
+                    os.environ['TELEGRAM_CHAT_ID'] = original_chat
+                else:
+                    os.environ.pop('TELEGRAM_CHAT_ID', None)
+
+                flash('Test sent to Telegram.' if ok else f'Test failed: {info}', 'success' if ok else 'danger')
+                return redirect(url_for('company_telegram_settings', company_id=company_id))
+
+            elif action == 'detect':
+                if not telegram_settings.bot_token:
+                    flash('Provide bot token to detect chat ID.', 'danger')
+                    return redirect(url_for('company_telegram_settings', company_id=company_id))
+
                 try:
                     resp = requests.get(
-                        f"https://api.telegram.org/bot{use_token}/getUpdates",
+                        f"https://api.telegram.org/bot{telegram_settings.bot_token}/getUpdates",
                         timeout=8,
                     )
                     data = resp.json()
@@ -537,18 +873,20 @@ def create_app() -> Flask:
                                 found = (str(chat.get('id') or ''), chat.get('title') or '')
                                 break
                     if found:
-                        chat_id = found[0]
-                        group_name = found[1]
-                        flash(f'Detected chat id {chat_id} for group {group_name}. Click Save to persist.', 'success')
+                        telegram_settings.chat_id = found[0]
+                        telegram_settings.group_name = found[1]
+                        db.session.commit()
+                        flash(f'Detected chat ID {found[0]} for group "{found[1]}". Settings saved.', 'success')
                     else:
-                        flash('No group chat found in bot updates. Add bot to group, disable privacy, send a message, then Detect again.', 'warning')
-                except Exception as exc:  # noqa: BLE001
+                        flash('No group chat found in bot updates. Add bot to group, disable privacy, send a message, then try again.', 'warning')
+                except Exception as exc:
                     flash(f'Detect failed: {exc}', 'danger')
-            # fallthrough to render with possibly updated locals
-            token = form_token or token
-        return render_template('telegram_settings.html', token=token, chat_id=chat_id, group_name=group_name)
+                return redirect(url_for('company_telegram_settings', company_id=company_id))
+
+        return render_template('company_telegram_settings.html', company=company, settings=telegram_settings)
 
     @app.route('/messages', methods=['GET', 'POST'])
+    @login_required
     def messages_page():
         if request.method == 'POST':
             text = request.form.get('text', '').strip()
@@ -561,8 +899,12 @@ def create_app() -> Flask:
         return render_template('messages.html')
 
     @app.route('/fibers', methods=['GET', 'POST'])
+    @login_required
     def fibers_page():
-        devices = Device.query.order_by(Device.name.asc()).all()
+        # Get user's company IDs
+        user_company_ids = get_user_company_ids(current_user.id)
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
+
         if request.method == 'POST':
             name = request.form.get('name', '').strip()
             device_id = request.form.get('device_id')
@@ -575,13 +917,21 @@ def create_app() -> Flask:
             except ValueError:
                 flash('Invalid device.', 'danger')
                 return redirect(url_for('fibers_page'))
+
+            # Check if user has access to the selected device
+            device = Device.query.get(device_id_int)
+            if not device or device.company_id not in user_company_ids:
+                flash('You do not have access to the selected device.', 'danger')
+                return redirect(url_for('fibers_page'))
+
             check = FiberCheck(name=name, device_id=device_id_int, interface_name=if_name)
             db.session.add(check)
             db.session.commit()
             flash('Fiber monitor added.', 'success')
             return redirect(url_for('fibers_page'))
 
-        checks = FiberCheck.query.all()
+        # Filter fiber checks by user's companies through device relationship
+        checks = FiberCheck.query.join(Device).filter(Device.company_id.in_(user_company_ids)).all()
         device_by_id = {d.id: d for d in devices}
         rows = []
         for c in checks:
@@ -598,12 +948,73 @@ def create_app() -> Flask:
             })
         return render_template('fibers.html', devices=devices, rows=rows)
 
+    @app.route('/fibers/edit/<int:check_id>', methods=['GET', 'POST'])
+    @login_required
+    def edit_fiber(check_id: int):
+        check = FiberCheck.query.get_or_404(check_id)
+
+        # Check if user has access to the device's company
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this fiber monitor.', 'danger')
+            return redirect(url_for('fibers_page'))
+
+        if request.method == 'POST':
+            name = request.form.get('name', '').strip()
+            interface_name = request.form.get('interface_name', '').strip()
+
+            if not name or not interface_name:
+                flash('Name and interface name are required.', 'danger')
+                return redirect(url_for('edit_fiber', check_id=check_id))
+
+            # Update fiber check
+            check.name = name
+            check.interface_name = interface_name
+
+            db.session.commit()
+            flash('Fiber monitor updated.', 'success')
+            return redirect(url_for('fibers_page'))
+
+        return render_template('edit_fiber.html', check=check, device=device)
+
+    @app.route('/fibers/delete/<int:check_id>', methods=['POST'])
+    @login_required
+    def delete_fiber(check_id: int):
+        check = FiberCheck.query.get_or_404(check_id)
+
+        # Check if user has access to the device's company
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this fiber monitor.', 'danger')
+            return redirect(url_for('fibers_page'))
+
+        # Delete associated fiber samples
+        FiberSample.query.filter_by(check_id=check_id).delete()
+        db.session.delete(check)
+        db.session.commit()
+        flash('Fiber monitor deleted.', 'success')
+        return redirect(url_for('fibers_page'))
+
     @app.route('/api/fibers/samples')
+    @login_required
     def api_fiber_samples():
         try:
             check_id = int(request.args.get('check_id'))
         except (TypeError, ValueError):
             return jsonify({'error': 'check_id required'}), 400
+
+        # Check if user has access to this fiber check
+        check = FiberCheck.query.get(check_id)
+        if not check:
+            return jsonify({'error': 'fiber check not found'}), 404
+
+        device = Device.query.get(check.device_id)
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            return jsonify({'error': 'access denied'}), 403
+
         since_seconds = request.args.get('since_seconds')
         q = FiberSample.query.filter_by(check_id=check_id).order_by(FiberSample.timestamp.desc())
         if since_seconds:
@@ -614,9 +1025,15 @@ def create_app() -> Flask:
             except ValueError:
                 pass
         samples = list(reversed(q.all()))
+
+        # Convert timestamps to Asia/Yangon timezone for consistency
+        import pytz
+        yangon_tz = pytz.timezone('Asia/Yangon')
+
         return jsonify([
             {
-                'ts': s.timestamp.isoformat(),
+                'ts': (s.timestamp.astimezone(yangon_tz) if s.timestamp.tzinfo else
+                       pytz.utc.localize(s.timestamp).astimezone(yangon_tz)).isoformat(),
                 'rx': s.rx_dbm,
                 'tx': s.tx_dbm,
                 'oper': s.oper_status,
@@ -625,9 +1042,17 @@ def create_app() -> Flask:
         ])
 
     @app.route('/fibers/probe/<int:check_id>', methods=['POST'])
+    @login_required
     def fiber_probe(check_id: int):
         check = FiberCheck.query.get_or_404(check_id)
         device = Device.query.get(check.device_id)
+
+        # Check if user has access to the device's company
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not device or device.company_id not in user_company_ids:
+            flash('You do not have access to this fiber monitor.', 'danger')
+            return redirect(url_for('fibers_page'))
+
         if not device or not device.enabled:
             flash('Device not available.', 'danger')
             return redirect(url_for('fibers_page'))
@@ -666,6 +1091,268 @@ def create_app() -> Flask:
         else:
             flash('Probe returned no data. Verify interface name and SNMP access.', 'warning')
         return redirect(url_for('fibers_page'))
+
+    @app.route('/login', methods=['GET', 'POST'])
+    def login():
+        if current_user.is_authenticated:
+            return redirect(url_for('dashboard'))
+
+        if request.method == 'POST':
+            email = request.form.get('email', '').strip()
+            password = request.form.get('password', '').strip()
+
+            if not email or not password:
+                flash('Email and password are required.', 'danger')
+                return redirect(url_for('login'))
+
+            user = User.query.filter_by(email=email).first()
+            if user and check_password_hash(user.password_hash, password):
+                login_user(user)
+                next_page = request.args.get('next')
+                return redirect(next_page) if next_page else redirect(url_for('dashboard'))
+            else:
+                flash('Invalid email or password.', 'danger')
+
+        return render_template('login.html')
+
+    @app.route('/logout')
+    @login_required
+    def logout():
+        logout_user()
+        return redirect(url_for('login'))
+
+    @app.route('/init', methods=['GET', 'POST'])
+    def init():
+        # Only allow if no users exist
+        if User.query.count() > 0:
+            return redirect(url_for('login'))
+
+        if request.method == 'POST':
+            email = request.form.get('email', '').strip()
+            password = request.form.get('password', '').strip()
+
+            if not email or not password:
+                flash('Email and password are required.', 'danger')
+                return redirect(url_for('init'))
+
+            if len(password) < 6:
+                flash('Password must be at least 6 characters.', 'danger')
+                return redirect(url_for('init'))
+
+            # Create superadmin user
+            user = User(
+                email=email,
+                password_hash=generate_password_hash(password),
+                is_superadmin=True
+            )
+            db.session.add(user)
+            db.session.commit()
+
+            flash('Superadmin account created. You can now log in.', 'success')
+            return redirect(url_for('login'))
+
+        return render_template('init.html')
+
+    @app.route('/admin/companies', methods=['GET', 'POST'])
+    @login_required
+    def admin_companies():
+        if not current_user.is_superadmin:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        if request.method == 'POST':
+            name = request.form.get('name', '').strip()
+            notes = request.form.get('notes', '').strip()
+
+            if not name:
+                flash('Company name is required.', 'danger')
+                return redirect(url_for('admin_companies'))
+
+            company = Company(name=name, notes=notes)
+            db.session.add(company)
+            db.session.commit()
+
+            flash('Company created.', 'success')
+            return redirect(url_for('admin_companies'))
+
+        companies = Company.query.order_by(Company.name.asc()).all()
+        return render_template('admin_companies.html', companies=companies)
+
+    @app.route('/admin/company/<int:company_id>', methods=['GET', 'POST'])
+    @login_required
+    def admin_company(company_id):
+        if not current_user.is_superadmin:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        company = Company.query.get_or_404(company_id)
+
+        if request.method == 'POST':
+            action = request.form.get('action')
+
+            if action == 'update':
+                name = request.form.get('name', '').strip()
+                notes = request.form.get('notes', '').strip()
+
+                if not name:
+                    flash('Company name is required.', 'danger')
+                    return redirect(url_for('admin_company', company_id=company_id))
+
+                company.name = name
+                company.notes = notes
+                db.session.commit()
+                flash('Company updated.', 'success')
+
+            elif action == 'delete':
+                # Check if company has devices
+                device_count = Device.query.filter_by(company_id=company_id).count()
+                if device_count > 0:
+                    flash(f'Cannot delete company with {device_count} devices.', 'danger')
+                    return redirect(url_for('admin_company', company_id=company_id))
+
+                # Delete user-company relationships
+                UserCompany.query.filter_by(company_id=company_id).delete()
+                db.session.delete(company)
+                db.session.commit()
+                flash('Company deleted.', 'success')
+                return redirect(url_for('admin_companies'))
+
+            return redirect(url_for('admin_company', company_id=company_id))
+
+        # Get users assigned to this company
+        user_companies = UserCompany.query.filter_by(company_id=company_id).all()
+        assigned_users = []
+        for uc in user_companies:
+            user = User.query.get(uc.user_id)
+            if user:
+                assigned_users.append({
+                    'user': user,
+                    'role': uc.role
+                })
+
+        return render_template('admin_company.html', company=company, assigned_users=assigned_users)
+
+    @app.route('/admin/users', methods=['GET', 'POST'])
+    @login_required
+    def admin_users():
+        if not current_user.is_superadmin:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        if request.method == 'POST':
+            email = request.form.get('email', '').strip()
+            password = request.form.get('password', '').strip()
+            is_superadmin = request.form.get('is_superadmin') == 'on'
+
+            if not email or not password:
+                flash('Email and password are required.', 'danger')
+                return redirect(url_for('admin_users'))
+
+            if len(password) < 6:
+                flash('Password must be at least 6 characters.', 'danger')
+                return redirect(url_for('admin_users'))
+
+            # Check if user already exists
+            existing_user = User.query.filter_by(email=email).first()
+            if existing_user:
+                flash('User with this email already exists.', 'danger')
+                return redirect(url_for('admin_users'))
+
+            user = User(
+                email=email,
+                password_hash=generate_password_hash(password),
+                is_superadmin=is_superadmin
+            )
+            db.session.add(user)
+            db.session.commit()
+
+            flash('User created.', 'success')
+            return redirect(url_for('admin_users'))
+
+        users = User.query.order_by(User.email.asc()).all()
+        return render_template('admin_users.html', users=users)
+
+    @app.route('/admin/user/<int:user_id>', methods=['GET', 'POST'])
+    @login_required
+    def admin_user(user_id):
+        if not current_user.is_superadmin:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        user = User.query.get_or_404(user_id)
+
+        if request.method == 'POST':
+            action = request.form.get('action')
+
+            if action == 'update':
+                email = request.form.get('email', '').strip()
+                is_superadmin = request.form.get('is_superadmin') == 'on'
+
+                if not email:
+                    flash('Email is required.', 'danger')
+                    return redirect(url_for('admin_user', user_id=user_id))
+
+                # Check if email is taken by another user
+                existing_user = User.query.filter_by(email=email).first()
+                if existing_user and existing_user.id != user_id:
+                    flash('Email already taken.', 'danger')
+                    return redirect(url_for('admin_user', user_id=user_id))
+
+                user.email = email
+                user.is_superadmin = is_superadmin
+                db.session.commit()
+                flash('User updated.', 'success')
+
+            elif action == 'assign_company':
+                company_id = request.form.get('company_id')
+                role = request.form.get('role', 'viewer')
+
+                if company_id:
+                    # Remove existing assignment
+                    UserCompany.query.filter_by(user_id=user_id, company_id=company_id).delete()
+
+                    # Add new assignment
+                    uc = UserCompany(user_id=user_id, company_id=company_id, role=role)
+                    db.session.add(uc)
+                    db.session.commit()
+                    flash('Company assignment updated.', 'success')
+
+            elif action == 'remove_company':
+                company_id = request.form.get('company_id')
+                if company_id:
+                    UserCompany.query.filter_by(user_id=user_id, company_id=int(company_id)).delete()
+                    db.session.commit()
+                    flash('Company assignment removed.', 'success')
+
+            elif action == 'delete':
+                if user_id == current_user.id:
+                    flash('Cannot delete your own account.', 'danger')
+                    return redirect(url_for('admin_user', user_id=user_id))
+
+                # Delete user-company relationships
+                UserCompany.query.filter_by(user_id=user_id).delete()
+                db.session.delete(user)
+                db.session.commit()
+                flash('User deleted.', 'success')
+                return redirect(url_for('admin_users'))
+
+            return redirect(url_for('admin_user', user_id=user_id))
+
+        # Get all companies for assignment
+        companies = Company.query.order_by(Company.name.asc()).all()
+
+        # Get user's current company assignments
+        user_companies = UserCompany.query.filter_by(user_id=user_id).all()
+        assigned_companies = []
+        for uc in user_companies:
+            company = Company.query.get(uc.company_id)
+            if company:
+                assigned_companies.append({
+                    'company': company,
+                    'role': uc.role
+                })
+
+        return render_template('admin_user.html', user=user, companies=companies, assigned_companies=assigned_companies)
 
     return app
 

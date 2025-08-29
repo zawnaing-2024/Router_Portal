@@ -14,7 +14,7 @@ from models import PingCheck
 from models import PingSample
 from netmiko_utils import backup_device_and_download, fetch_device_resources
 from netmiko_utils import run_ping_on_router
-from telegram_utils import send_telegram_message
+from telegram_utils import send_company_telegram_message, should_send_company_alert, get_company_ping_threshold
 from snmp_utils import get_interface_status_and_power
 from models import FiberCheck, FiberSample
 
@@ -141,42 +141,63 @@ def _scheduled_ping_job() -> None:
         checks = PingCheck.query.all()
         for check in checks:
             device = Device.query.get(check.device_id)
-            if not device or not device.enabled:
+            if not device or not device.enabled or not device.company_id:
                 continue
+
             rtt = run_ping_on_router(
                 device,
                 target_ip=check.target_ip,
                 source_ip=check.source_ip,
                 source_interface=check.source_interface,
             )
+
             # Write in a separate transaction per check to avoid database locked
             try:
                 check.last_rtt_ms = rtt if rtt is not None else None
                 check.last_checked_at = datetime.now(timezone.utc)
                 sample = PingSample(check_id=check.id, timestamp=datetime.now(timezone.utc), rtt_ms=rtt)
                 db.session.add(sample)
+
+                # High ping alert (if enabled for company)
+                if rtt is not None and should_send_company_alert(device.company_id, 'high_ping'):
+                    threshold = get_company_ping_threshold(device.company_id)
+                    if rtt > threshold:
+                        send_company_telegram_message(
+                            device.company_id,
+                            text=(
+                                f"<b>⚠️ High Ping Alert</b>\n"
+                                f"Device: {device.name}\n"
+                                f"Monitor: {check.name}\n"
+                                f"Target: {check.target_ip}\n"
+                                f"RTT: {rtt:.1f} ms (threshold: {threshold} ms)\n"
+                                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                            )
+                        )
+
                 # Failure tracking and alerting
                 if rtt is None:
                     # start outage timer if first failure
                     if not check.down_start_at:
                         check.down_start_at = datetime.now(timezone.utc)
                     check.consecutive_failures = (check.consecutive_failures or 0) + 1
-                    if check.consecutive_failures >= 5 and not check.alerted:
+
+                    # Send down alert if configured and not already alerted
+                    if check.consecutive_failures >= 5 and not check.alerted and should_send_company_alert(device.company_id, 'ping_down'):
                         started = check.down_start_at.strftime('%Y-%m-%d %H:%M:%S UTC') if check.down_start_at else 'now'
-                        sent = send_telegram_message(
+                        send_company_telegram_message(
+                            device.company_id,
                             text=(
-                                f"<b>Ping DOWN</b>\n"
+                                f"<b>🔴 Ping DOWN</b>\n"
+                                f"Device: {device.name}\n"
                                 f"Monitor: {check.name}\n"
                                 f"Target: {check.target_ip}\n"
-                                f"Router Check ID: {check.device_id}\n"
                                 f"Down since: {started}\n"
                                 f"Consecutive timeouts: {check.consecutive_failures}"
                             )
                         )
-                        if sent:
-                            check.alerted = True
+                        check.alerted = True
                 else:
-                    # restore
+                    # Send restore alert if previously down
                     if check.alerted or check.consecutive_failures >= 5:
                         started = check.down_start_at
                         duration = ''
@@ -185,20 +206,43 @@ def _scheduled_ping_job() -> None:
                             mins = int(delta.total_seconds() // 60)
                             secs = int(delta.total_seconds() % 60)
                             duration = f" (duration {mins}m {secs}s)"
-                        send_telegram_message(
+
+                        send_company_telegram_message(
+                            device.company_id,
                             text=(
-                                f"<b>Ping RESTORED</b>\n"
+                                f"<b>🟢 Ping RESTORED</b>\n"
+                                f"Device: {device.name}\n"
                                 f"Monitor: {check.name}\n"
                                 f"Target: {check.target_ip}\n"
-                                f"Router Check ID: {check.device_id}\n"
                                 f"RTT: {rtt:.1f} ms{duration}"
                             )
                         )
+
                     check.consecutive_failures = 0
                     check.alerted = False
                     check.down_start_at = None
+
+                # Handle continuous down alerts (send reminder every 30 minutes if still down)
+                if rtt is None and check.alerted and check.down_start_at and should_send_company_alert(device.company_id, 'ping_down'):
+                    # Check if it's been 30 minutes since last alert (using last_checked_at)
+                    time_since_alert = datetime.now(timezone.utc) - check.last_checked_at
+                    if time_since_alert.total_seconds() >= 1800:  # 30 minutes
+                        send_company_telegram_message(
+                            device.company_id,
+                            text=(
+                                f"<b>🔴 Ping STILL DOWN</b>\n"
+                                f"Device: {device.name}\n"
+                                f"Monitor: {check.name}\n"
+                                f"Target: {check.target_ip}\n"
+                                f"Down since: {check.down_start_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                                f"Consecutive timeouts: {check.consecutive_failures}\n"
+                                f"Duration: {int((datetime.now(timezone.utc) - check.down_start_at).total_seconds() // 60)} minutes"
+                            )
+                        )
+
                 db.session.commit()
-            except Exception:
+            except Exception as exc:
+                print(f"Error in ping job for check {check.id}: {exc}")
                 db.session.rollback()
 
 
@@ -295,8 +339,9 @@ def _scheduled_fiber_job() -> None:
         checks = FiberCheck.query.all()
         for c in checks:
             d = Device.query.get(c.device_id)
-            if not d or not d.enabled or d.snmp_version != 'v2c' or not d.snmp_community:
+            if not d or not d.enabled or not d.company_id or d.snmp_version != 'v2c' or not d.snmp_community:
                 continue
+
             try:
                 res = get_interface_status_and_power(
                     d.host,
@@ -308,11 +353,84 @@ def _scheduled_fiber_job() -> None:
                 )
             except Exception:
                 res = None
+
             try:
+                prev_oper_status = c.last_oper_status
                 c.last_rx_dbm = None if not res else res.get('rx_power_dbm')
                 c.last_tx_dbm = None if not res else res.get('tx_power_dbm')
                 c.last_oper_status = None if not res else res.get('if_oper_status')
                 c.last_checked_at = datetime.now(timezone.utc)
+
+                # Fiber down alert (if status changed from up to down)
+                if prev_oper_status == 1 and c.last_oper_status != 1 and should_send_company_alert(d.company_id, 'fiber_down'):
+                    # Set down start time if not already set
+                    if not c.down_start_at:
+                        c.down_start_at = datetime.now(timezone.utc)
+
+                    send_company_telegram_message(
+                        d.company_id,
+                        text=(
+                            f"<b>🔴 Fiber DOWN</b>\n"
+                            f"Device: {d.name}\n"
+                            f"Monitor: {c.name}\n"
+                            f"Interface: {c.interface_name}\n"
+                            f"Status: DOWN\n"
+                            f"Down since: {c.down_start_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        )
+                    )
+                    c.alerted_down = True
+
+                # Fiber restored alert (if status changed from down to up)
+                elif prev_oper_status != 1 and c.last_oper_status == 1 and should_send_company_alert(d.company_id, 'fiber_down'):
+                    rx_power = f"{c.last_rx_dbm:.2f} dBm" if c.last_rx_dbm is not None else "Unknown"
+                    tx_power = f"{c.last_tx_dbm:.2f} dBm" if c.last_tx_dbm is not None else "Unknown"
+
+                    # Calculate outage duration
+                    duration_info = ""
+                    if c.down_start_at:
+                        delta = datetime.now(timezone.utc) - c.down_start_at
+                        mins = int(delta.total_seconds() // 60)
+                        secs = int(delta.total_seconds() % 60)
+                        if mins > 0 or secs > 0:
+                            duration_info = f" (outage duration: {mins}m {secs}s)"
+
+                    send_company_telegram_message(
+                        d.company_id,
+                        text=(
+                            f"<b>🟢 Fiber RESTORED</b>\n"
+                            f"Device: {d.name}\n"
+                            f"Monitor: {c.name}\n"
+                            f"Interface: {c.interface_name}\n"
+                            f"Status: UP\n"
+                            f"Rx Power: {rx_power}\n"
+                            f"Tx Power: {tx_power}{duration_info}\n"
+                            f"Restored at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        )
+                    )
+
+                    # Reset alert tracking
+                    c.alerted_down = False
+                    c.down_start_at = None
+
+                # Handle continuous down alerts (send reminder every 30 minutes if still down)
+                elif c.last_oper_status != 1 and c.alerted_down and c.down_start_at and should_send_company_alert(d.company_id, 'fiber_down'):
+                    # Check if it's been 30 minutes since last alert
+                    if c.last_checked_at:
+                        time_since_alert = datetime.now(timezone.utc) - c.last_checked_at
+                        if time_since_alert.total_seconds() >= 1800:  # 30 minutes
+                            send_company_telegram_message(
+                                d.company_id,
+                                text=(
+                                    f"<b>🔴 Fiber STILL DOWN</b>\n"
+                                    f"Device: {d.name}\n"
+                                    f"Monitor: {c.name}\n"
+                                    f"Interface: {c.interface_name}\n"
+                                    f"Status: DOWN\n"
+                                    f"Down since: {c.down_start_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                                    f"Duration: {int((datetime.now(timezone.utc) - c.down_start_at).total_seconds() // 60)} minutes"
+                                )
+                            )
+
                 db.session.add(FiberSample(
                     check_id=c.id,
                     timestamp=datetime.now(timezone.utc),
@@ -321,7 +439,9 @@ def _scheduled_fiber_job() -> None:
                     oper_status=c.last_oper_status,
                 ))
                 db.session.commit()
-            except Exception:
+
+            except Exception as exc:
+                print(f"Error in fiber job for check {c.id}: {exc}")
                 db.session.rollback()
 
 
