@@ -2,7 +2,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import paramiko
 import pytz
@@ -369,6 +369,7 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
     - Mikrotik: use /interface monitor-traffic ... once
     - Linux: not available directly; return None (computed in app using byte counters)
     """
+    print(f"[BW] get_interface_rates called for device {getattr(device, 'name', 'unknown')} interface {interface_name}")
     if getattr(device, 'device_type', 'mikrotik') == 'linux':
         return None
     # Try multiple command variants and quoting; handle spaced digits
@@ -418,8 +419,9 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
         r"tx-bits-per-second\s*:\s*([\d.]+)",
     ]
 
+    print(f"[BW] STARTING PARSING - Data length: {len(data)}")
     for line in data.splitlines():
-        print(f"[BW] parse line: {line.strip()}")
+        print(f"[BW] parse line: '{line.strip()}'")
 
         for pattern in rx_rate_patterns:
             if rx is None:
@@ -468,44 +470,59 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
                     tx = float(mtx.group(1).replace(' ', ''))
                 except ValueError:
                     pass
-    # If not available or zero, try computing from byte counters over ~1s
-    if (rx is None and tx is None) or ((rx or 0.0) == 0.0 and (tx or 0.0) == 0.0):
-        try:
-            client = _open_ssh_client(device)
-            # First sample
-            cmd_rx1 = f"/interface get [find name=\"{interface_name}\"] rx-byte"
-            cmd_tx1 = f"/interface get [find name=\"{interface_name}\"] tx-byte"
-            print(f"[BW] bytes first sample: {cmd_rx1} | {cmd_tx1}")
-            _, out1, _ = client.exec_command(cmd_rx1)
-            _, out2, _ = client.exec_command(cmd_tx1)
-            s1 = out1.read().decode(errors='ignore')
-            s2 = out2.read().decode(errors='ignore')
-            print(f"[BW] bytes first output: rx={s1.strip()} tx={s2.strip()}")
-            m1 = re.search(r"([0-9]+)", s1 or '')
-            m2 = re.search(r"([0-9]+)", s2 or '')
-            if not (m1 and m2):
-                client.close()
-                return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0} if (rx is not None or tx is not None) else None
-            rx1 = int(m1.group(1)); tx1 = int(m2.group(1))
-            time.sleep(1.0)
-            # Second sample
-            _, out3, _ = client.exec_command(cmd_rx1)
-            _, out4, _ = client.exec_command(cmd_tx1)
-            s3 = out3.read().decode(errors='ignore')
-            s4 = out4.read().decode(errors='ignore')
-            print(f"[BW] bytes second output: rx={s3.strip()} tx={s4.strip()}")
+        # If we got rates from monitor-traffic parsing, use them directly
+    if rx is not None or tx is not None:
+        print(f"[BW] using monitor-traffic rates: rx={rx or 0.0:.0f} tx={tx or 0.0:.0f}")
+        return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0}
+
+    # Fall back to byte counters only if monitor-traffic failed
+    print("[BW] monitor-traffic failed, trying byte counters as fallback")
+    try:
+        client = _open_ssh_client(device)
+        # First sample
+        cmd_rx1 = f"/interface get [find name=\"{interface_name}\"] rx-byte"
+        cmd_tx1 = f"/interface get [find name=\"{interface_name}\"] tx-byte"
+        print(f"[BW] bytes first sample: {cmd_rx1} | {cmd_tx1}")
+        _, out1, _ = client.exec_command(cmd_rx1)
+        _, out2, _ = client.exec_command(cmd_tx1)
+        s1 = out1.read().decode(errors='ignore')
+        s2 = out2.read().decode(errors='ignore')
+        print(f"[BW] bytes first output: rx={s1.strip()} tx={s2.strip()}")
+        m1 = re.search(r"([0-9]+)", s1 or '')
+        m2 = re.search(r"([0-9]+)", s2 or '')
+        if not (m1 and m2):
             client.close()
-            m3 = re.search(r"([0-9]+)", s3 or '')
-            m4 = re.search(r"([0-9]+)", s4 or '')
-            if m3 and m4:
-                rx2 = int(m3.group(1)); tx2 = int(m4.group(1))
-                rx = max(0.0, float(rx2 - rx1)) * 8.0  # bytes->bits per ~1s
-                tx = max(0.0, float(tx2 - tx1)) * 8.0
-        except Exception:
-            pass
-    if rx is None and tx is None:
-        return None
-    return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0}
+            return None
+        rx1 = int(m1.group(1)); tx1 = int(m2.group(1))
+        time.sleep(1.0)
+        # Second sample
+        _, out3, _ = client.exec_command(cmd_rx1)
+        _, out4, _ = client.exec_command(cmd_tx1)
+        s3 = out3.read().decode(errors='ignore')
+        s4 = out4.read().decode(errors='ignore')
+        print(f"[BW] bytes second output: rx={s3.strip()} tx={s4.strip()}")
+        client.close()
+        m3 = re.search(r"([0-9]+)", s3 or '')
+        m4 = re.search(r"([0-9]+)", s4 or '')
+        if m3 and m4:
+            rx2 = int(m3.group(1)); tx2 = int(m4.group(1))
+            d_rx = rx2 - rx1
+            d_tx = tx2 - tx1
+            # Handle counter resets: if negative, assume counter was reset
+            if d_rx < 0:
+                print(f"[BW] byte counter rx reset detected: rx1={rx1} rx2={rx2}, using rx2")
+                d_rx = rx2
+            if d_tx < 0:
+                print(f"[BW] byte counter tx reset detected: tx1={tx1} tx2={tx2}, using tx2")
+                d_tx = tx2
+            rx = float(d_rx) * 8.0  # bytes->bits per ~1s
+            tx = float(d_tx) * 8.0
+            print(f"[BW] byte counters successful: rx={rx:.0f} tx={tx:.0f}")
+            return {"rx_bps": rx, "tx_bps": tx}
+    except Exception as e:
+        print(f"[BW] byte counters failed: {e}")
+
+    return None
 
 
 def read_linux_interface_bytes(device, interface_name: str) -> Optional[Tuple[int, int]]:
@@ -528,10 +545,13 @@ def read_linux_interface_bytes(device, interface_name: str) -> Optional[Tuple[in
         return None
 
 
-def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple[int, int]]:
+def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Union[Tuple[int, int], Dict[str, float]]]:
     """Read rx/tx byte counters for a RouterOS interface.
 
-    Returns a tuple (rx_bytes, tx_bytes) or None on failure.
+    Returns:
+    - Dict with rates: {"rx_bps": rx_rate, "tx_bps": tx_rate} when monitor-traffic succeeds
+    - Tuple: (rx_bytes, tx_bytes) when falling back to byte counters
+    - None on failure
     """
     try:
         client = _open_ssh_client(device)
@@ -654,7 +674,9 @@ def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple
         client.close()
         if rx_val is not None and tx_val is not None:
             print(f"[BW] ssh bytes parsed: rx={rx_val} tx={tx_val}")
-            return rx_val, tx_val
+            # If we parsed rates from monitor-traffic, return as dict
+            # Otherwise return byte counters as tuple
+            return {"rx_bps": rx_val, "tx_bps": tx_val}
         print("[BW] ssh bytes unavailable - all commands failed")
         return None
     except Exception as e:

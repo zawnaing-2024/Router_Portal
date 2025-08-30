@@ -1036,6 +1036,9 @@ def create_app() -> Flask:
         try:
             device_id = int(request.args.get('device_id'))
             if_name = request.args.get('interface')
+            # Strip surrounding quotes if present
+            if if_name and if_name.startswith('"') and if_name.endswith('"'):
+                if_name = if_name[1:-1]
         except (TypeError, ValueError):
             return jsonify({'error': 'device_id and interface required'}), 400
         device = Device.query.get(device_id)
@@ -1621,6 +1624,9 @@ def create_app() -> Flask:
         try:
             device_id = int(request.args.get('device_id'))
             if_name = request.args.get('interface')
+            # Strip surrounding quotes if present
+            if if_name and if_name.startswith('"') and if_name.endswith('"'):
+                if_name = if_name[1:-1]
         except (TypeError, ValueError):
             return jsonify({'error': 'device_id and interface required'}), 400
         device = Device.query.get(device_id)
@@ -1637,35 +1643,60 @@ def create_app() -> Flask:
         now_epoch = time.time()
 
         # First, try byte counters (preferred for reliability)
+        print(f"[BW] device type: {device.device_type}")
         if device.device_type == 'linux':
+            print("[BW] calling read_linux_interface_bytes")
             pair = read_linux_interface_bytes(device, if_name)
         else:
+            print("[BW] calling read_routeros_interface_bytes")
             pair = read_routeros_interface_bytes(device, if_name)
 
         if pair:
-            print(f"[BW] counters read: rx_bytes={pair[0]} tx_bytes={pair[1]}")
-            prev = getattr(app, '_bw_last', {}).get(key) if hasattr(app, '_bw_last') else None
-            if not hasattr(app, '_bw_last'):
-                app._bw_last = {}
-            app._bw_last[key] = (now_epoch, pair[0], pair[1])
-            if prev:
-                dt = max(0.001, now_epoch - prev[0])
-                d_rx = pair[0] - prev[1]
-                d_tx = pair[1] - prev[2]
-                # Handle counter wrap by clamping negatives to zero
-                if d_rx < 0:
-                    print(f"[BW] rx wrap detected: prev={prev[1]} curr={pair[0]}")
-                    d_rx = 0
-                if d_tx < 0:
-                    print(f"[BW] tx wrap detected: prev={prev[2]} curr={pair[1]}")
-                    d_tx = 0
-                rx_bps = (d_rx * 8.0) / dt
-                tx_bps = (d_tx * 8.0) / dt
-                print(f"[BW] computed bps: dt={dt:.3f}s rx_bps={rx_bps:.0f} tx_bps={tx_bps:.0f}")
-                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': rx_bps, 'tx_bps': tx_bps})
-            # First sample: return counters so client can show pending
-            print("[BW] first sample for this key; returning counters only")
-            return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': pair[0], 'tx_bytes': pair[1]})
+            print(f"[BW] pair type: {type(pair)}, value: {pair}")
+            # Handle both tuple (Linux) and dict (RouterOS) return types
+            if isinstance(pair, dict):
+                rx_bps = pair.get('rx_bps', 0)
+                tx_bps = pair.get('tx_bps', 0)
+                print(f"[BW] rates received: rx_bps={rx_bps:.0f} tx_bps={tx_bps:.0f}")
+            elif isinstance(pair, tuple) and len(pair) >= 2:
+                # For Linux interface bytes, compute rates from counters
+                rx_bytes, tx_bytes = pair[0], pair[1]
+                key = (device.id, if_name)
+                prev = getattr(app, '_bw_last', {}).get(key) if hasattr(app, '_bw_last') else None
+                if not hasattr(app, '_bw_last'):
+                    app._bw_last = {}
+
+                if prev:
+                    dt = max(1.0, now_epoch - prev[0])
+                    d_rx = rx_bytes - prev[1]
+                    d_tx = tx_bytes - prev[2]
+
+                    if d_rx < 0:
+                        print(f"[BW] linux rx counter reset detected: prev={prev[1]} curr={rx_bytes}")
+                        d_rx = rx_bytes
+                    if d_tx < 0:
+                        print(f"[BW] linux tx counter reset detected: prev={prev[2]} curr={tx_bytes}")
+                        d_tx = tx_bytes
+
+                    app._bw_last[key] = (now_epoch, rx_bytes, tx_bytes)
+                    rx_bps = (d_rx * 8.0) / dt
+                    tx_bps = (d_tx * 8.0) / dt
+                    print(f"[BW] linux computed bps: dt={dt:.3f}s rx_bps={rx_bps:.0f} tx_bps={tx_bps:.0f}")
+                else:
+                    app._bw_last[key] = (now_epoch, rx_bytes, tx_bytes)
+                    rx_bps = 0
+                    tx_bps = 0
+                    print("[BW] linux first sample stored, returning zero rates")
+            else:
+                print(f"[BW] unexpected pair type: {type(pair)}")
+                rx_bps = 0
+                tx_bps = 0
+
+            return jsonify({
+                'ts': datetime.now(timezone.utc).isoformat(),
+                'rx_bps': rx_bps,
+                'tx_bps': tx_bps
+            })
 
         # If counters unavailable (e.g., permission), try SNMP counters next (if configured)
         if device.device_type != 'linux' and device.snmp_version == 'v2c' and device.snmp_community:

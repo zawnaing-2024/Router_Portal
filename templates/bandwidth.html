@@ -9,6 +9,7 @@
       <option value="3000" selected>3s</option>
       <option value="5000">5s</option>
     </select>
+    <button id="clearCache" class="btn btn-sm btn-outline-warning">Clear Cache</button>
   </div>
   </div>
 
@@ -71,10 +72,23 @@
 
   function saveRows() {
     try {
-      const toSave = rows.map(r => ({ device_id: r.device_id, device_name: r.device_name, iface: r.iface, name: r.name || '' }));
+      const toSave = rows.map(r => ({
+        device_id: r.device_id,
+        device_name: r.device_name,
+        iface: r.iface.replace(/^"(.*)"$/, '$1'), // Remove surrounding quotes before saving
+        name: r.name || ''
+      }));
       localStorage.setItem('bw_rows', JSON.stringify(toSave));
       localStorage.setItem('bw_interval', intervalSel.value || '3000');
     } catch {}
+  }
+
+  // Clear any cached data with quotes
+  function clearCache() {
+    localStorage.removeItem('bw_rows');
+    localStorage.removeItem('bw_interval');
+    rows = [];
+    renderRows();
   }
 
   function restoreRows() {
@@ -83,7 +97,15 @@
       const savedInterval = localStorage.getItem('bw_interval');
       if (savedInterval) intervalSel.value = savedInterval;
       if (Array.isArray(saved)) {
-        rows = saved.map(o => ({ device_id: String(o.device_id), device_name: o.device_name, iface: o.iface, name: o.name || '', rx_el: null, tx_el: null, lastCounters: null }));
+        rows = saved.map(o => ({
+          device_id: String(o.device_id),
+          device_name: o.device_name,
+          iface: o.iface.replace(/^"(.*)"$/, '$1'), // Remove surrounding quotes
+          name: o.name || '',
+          rx_el: null,
+          tx_el: null,
+          lastCounters: null
+        }));
         renderRows();
       }
     } catch {}
@@ -123,7 +145,7 @@
       probe.addEventListener('click', async () => {
         probe.disabled = true; probe.textContent = 'Probing...';
         try {
-          const r = await fetch(`/api/bandwidth/probe?device_id=${row.device_id}&interface=${encodeURIComponent(row.iface)}`);
+          const r = await fetch(`/api/bandwidth/probe?device_id=${row.device_id}&interface=${row.iface}`);
           const j = await r.json();
           alert('Path: ' + (j.path || '-') + '\nSSH bytes: ' + JSON.stringify(j.ssh_bytes) + '\nSSH monitor bps: ' + j.ssh_monitor_rx_bps + '/' + j.ssh_monitor_tx_bps + '\nSNMP bytes: ' + JSON.stringify(j.snmp_bytes));
         } catch(e) {
@@ -145,7 +167,7 @@
 
   async function pollRow(row) {
     try {
-      const r = await fetch(`/api/bandwidth/sample?device_id=${row.device_id}&interface=${encodeURIComponent(row.iface)}`);
+      const r = await fetch(`/api/bandwidth/sample?device_id=${row.device_id}&interface=${row.iface}`);
       const j = await r.json();
       const nowTs = Date.now();
       if (j && j.error) {
@@ -200,6 +222,15 @@
   });
 
   intervalSel.addEventListener('change', () => startTimer());
+
+  // Clear cache on page load to remove any quoted interface names
+  clearCache();
+
+  // Add event listener for clear cache button
+  document.getElementById('clearCache').addEventListener('click', () => {
+    clearCache();
+    alert('Cache cleared! Please refresh the page.');
+  });
 
   // initial
   restoreRows();
