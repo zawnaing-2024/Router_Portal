@@ -18,7 +18,7 @@ from scheduler import scheduler, add_or_update_backup_job, remove_backup_job, st
 from scheduler import _chunk_text_for_telegram
 from netmiko_utils import perform_manual_backup
 from telegram_utils import send_telegram_message, send_telegram_message_with_details
-from netmiko_utils import list_interfaces, get_interface_rates, read_linux_interface_bytes
+from netmiko_utils import list_interfaces, get_interface_rates, read_linux_interface_bytes, read_routeros_interface_bytes
 import requests
 from snmp_utils import get_interface_status_and_power
 
@@ -1572,12 +1572,16 @@ def create_app() -> Flask:
         if device.company_id not in user_company_ids:
             return jsonify({'error': 'access denied'}), 403
 
-        # For Mikrotik, return instantaneous rates
+        # For Mikrotik, prefer instantaneous rates; fallback to byte counters
         if device.device_type != 'linux':
             res = get_interface_rates(device, if_name)
-            if not res:
-                return jsonify({'error': 'rate not available'}), 502
-            return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': res['rx_bps'], 'tx_bps': res['tx_bps']})
+            if res:
+                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': res['rx_bps'], 'tx_bps': res['tx_bps']})
+            # fallback: use rx/tx byte counters for Linux-like diff on client
+            pair = read_routeros_interface_bytes(device, if_name)
+            if pair:
+                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': pair[0], 'tx_bytes': pair[1]})
+            return jsonify({'error': 'rate not available'}), 502
 
         # For Linux, return byte counters; client will diff to bps
         bytes_pair = read_linux_interface_bytes(device, if_name)

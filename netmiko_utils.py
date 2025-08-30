@@ -453,3 +453,48 @@ def read_linux_interface_bytes(device, interface_name: str) -> Optional[Tuple[in
         return None
 
 
+def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple[int, int]]:
+    """Read rx/tx byte counters for a RouterOS interface.
+
+    Returns a tuple (rx_bytes, tx_bytes) or None on failure.
+    """
+    try:
+        client = _open_ssh_client(device)
+        variants_rx = [
+            f"/interface get [find name=\"{interface_name}\"] rx-byte",
+            f"/interface get [find name={interface_name}] rx-byte",
+        ]
+        variants_tx = [
+            f"/interface get [find name=\"{interface_name}\"] tx-byte",
+            f"/interface get [find name={interface_name}] tx-byte",
+        ]
+        rx_val = None
+        tx_val = None
+        for cmd in variants_rx:
+            try:
+                _, out, _ = client.exec_command(cmd)
+                s = out.read().decode(errors='ignore').strip()
+                m = re.search(r"([0-9]+)", s)
+                if m:
+                    rx_val = int(m.group(1))
+                    break
+            except Exception:
+                continue
+        for cmd in variants_tx:
+            try:
+                _, out, _ = client.exec_command(cmd)
+                s = out.read().decode(errors='ignore').strip()
+                m = re.search(r"([0-9]+)", s)
+                if m:
+                    tx_val = int(m.group(1))
+                    break
+            except Exception:
+                continue
+        client.close()
+        if rx_val is not None and tx_val is not None:
+            return rx_val, tx_val
+        return None
+    except Exception:
+        return None
+
+
