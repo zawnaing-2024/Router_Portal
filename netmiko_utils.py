@@ -402,33 +402,70 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
         data = ''
     rx = None
     tx = None
+    # Parse formatted rates like "17.7Mbps" or "172.4Mbps"
+    rx_rate_patterns = [
+        r"rx-bits-per-second\s*:\s*([\d.]+)\s*Mbps",
+        r"rx-bits-per-second\s*:\s*([\d.]+)\s*Gbps",
+        r"rx-bits-per-second\s*:\s*([\d.]+)\s*Kbps",
+        r"rx-bits-per-second\s*:\s*([\d.]+)\s*bps",
+        r"rx-bits-per-second\s*:\s*([\d.]+)",
+    ]
+    tx_rate_patterns = [
+        r"tx-bits-per-second\s*:\s*([\d.]+)\s*Mbps",
+        r"tx-bits-per-second\s*:\s*([\d.]+)\s*Gbps",
+        r"tx-bits-per-second\s*:\s*([\d.]+)\s*Kbps",
+        r"tx-bits-per-second\s*:\s*([\d.]+)\s*bps",
+        r"tx-bits-per-second\s*:\s*([\d.]+)",
+    ]
+
     for line in data.splitlines():
         print(f"[BW] parse line: {line.strip()}")
-        # Support both ": value" and "=value" forms, allow spaces and decimals within digits
-        mrx = re.search(r"rx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
-        if mrx:
-            try:
-                rx = float(mrx.group(1).replace(' ', ''))
-            except ValueError:
-                pass
-        mtx = re.search(r"tx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
-        if mtx:
-            try:
-                tx = float(mtx.group(1).replace(' ', ''))
-            except ValueError:
-                pass
+
+        for pattern in rx_rate_patterns:
+            if rx is None:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    rate = float(match.group(1))
+                    # Convert to bps based on unit
+                    if 'Gbps' in pattern:
+                        rx = rate * 1_000_000_000
+                    elif 'Mbps' in pattern:
+                        rx = rate * 1_000_000
+                    elif 'Kbps' in pattern:
+                        rx = rate * 1_000
+                    else:
+                        rx = rate
+                    break
+
+        for pattern in tx_rate_patterns:
+            if tx is None:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    rate = float(match.group(1))
+                    # Convert to bps based on unit
+                    if 'Gbps' in pattern:
+                        tx = rate * 1_000_000_000
+                    elif 'Mbps' in pattern:
+                        tx = rate * 1_000_000
+                    elif 'Kbps' in pattern:
+                        tx = rate * 1_000
+                    else:
+                        tx = rate
+                    break
+
+        # Fallback to old parsing if needed
         if rx is None:
-            mrx2 = re.search(r"rx-rate\s*[:=]\s*([0-9. ][0-9. ]*)\s*bps", line, re.IGNORECASE)
-            if mrx2:
+            mrx = re.search(r"rx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
+            if mrx:
                 try:
-                    rx = float(mrx2.group(1).replace(' ', ''))
+                    rx = float(mrx.group(1).replace(' ', ''))
                 except ValueError:
                     pass
         if tx is None:
-            mtx2 = re.search(r"tx-rate\s*[:=]\s*([0-9. ][0-9. ]*)\s*bps", line, re.IGNORECASE)
-            if mtx2:
+            mtx = re.search(r"tx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
+            if mtx:
                 try:
-                    tx = float(mtx2.group(1).replace(' ', ''))
+                    tx = float(mtx.group(1).replace(' ', ''))
                 except ValueError:
                     pass
     # If not available or zero, try computing from byte counters over ~1s
@@ -535,23 +572,78 @@ def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple
                 data = out.read().decode(errors='ignore')
                 print(f"[BW] counter output: {data[:400]}")
 
-                # Parse various possible formats
-                patterns = [
-                    r"rx-byte\s*:\s*([0-9]+)",
-                    r"rx-bytes\s*:\s*([0-9]+)",
-                    r"rx-byte\s*=\s*([0-9]+)",
-                    r"rx-bytes\s*=\s*([0-9]+)",
-                    r"rx\s*:\s*([0-9]+)",
+                # Parse various possible formats - handle both raw bytes and formatted rates
+                # First try to get formatted rates (like "17.7Mbps")
+                rx_rate_patterns = [
+                    r"rx-bits-per-second\s*:\s*([\d.]+)\s*Mbps",
+                    r"rx-bits-per-second\s*:\s*([\d.]+)\s*Gbps",
+                    r"rx-bits-per-second\s*:\s*([\d.]+)\s*Kbps",
+                    r"rx-bits-per-second\s*:\s*([\d.]+)\s*bps",
+                    r"rx-bits-per-second\s*:\s*([\d.]+)",
                 ]
-                for pattern in patterns:
-                    if rx_val is None:
-                        rx_match = re.search(pattern, data, re.MULTILINE)
-                        if rx_match:
-                            rx_val = int(rx_match.group(1))
-                    if tx_val is None:
-                        tx_match = re.search(pattern.replace('rx', 'tx'), data, re.MULTILINE)
-                        if tx_match:
-                            tx_val = int(tx_match.group(1))
+                tx_rate_patterns = [
+                    r"tx-bits-per-second\s*:\s*([\d.]+)\s*Mbps",
+                    r"tx-bits-per-second\s*:\s*([\d.]+)\s*Gbps",
+                    r"tx-bits-per-second\s*:\s*([\d.]+)\s*Kbps",
+                    r"tx-bits-per-second\s*:\s*([\d.]+)\s*bps",
+                    r"tx-bits-per-second\s*:\s*([\d.]+)",
+                ]
+
+                rx_rate = None
+                tx_rate = None
+
+                for pattern in rx_rate_patterns:
+                    match = re.search(pattern, data, re.MULTILINE)
+                    if match:
+                        rate = float(match.group(1))
+                        # Convert to bps based on unit
+                        if 'Gbps' in pattern:
+                            rx_rate = rate * 1_000_000_000
+                        elif 'Mbps' in pattern:
+                            rx_rate = rate * 1_000_000
+                        elif 'Kbps' in pattern:
+                            rx_rate = rate * 1_000
+                        else:
+                            rx_rate = rate
+                        break
+
+                for pattern in tx_rate_patterns:
+                    match = re.search(pattern, data, re.MULTILINE)
+                    if match:
+                        rate = float(match.group(1))
+                        # Convert to bps based on unit
+                        if 'Gbps' in pattern:
+                            tx_rate = rate * 1_000_000_000
+                        elif 'Mbps' in pattern:
+                            tx_rate = rate * 1_000_000
+                        elif 'Kbps' in pattern:
+                            tx_rate = rate * 1_000
+                        else:
+                            tx_rate = rate
+                        break
+
+                # If we got rates, use them directly
+                if rx_rate is not None and tx_rate is not None:
+                    rx_val = rx_rate
+                    tx_val = tx_rate
+                else:
+                    # Fallback to byte parsing
+                    byte_patterns = [
+                        r"rx-byte\s*:\s*([0-9]+)",
+                        r"rx-bytes\s*:\s*([0-9]+)",
+                        r"rx-byte\s*=\s*([0-9]+)",
+                        r"rx-bytes\s*=\s*([0-9]+)",
+                        r"rx\s*:\s*([0-9]+)",
+                    ]
+                    for pattern in byte_patterns:
+                        if rx_val is None:
+                            rx_match = re.search(pattern, data, re.MULTILINE)
+                            if rx_match:
+                                rx_val = int(rx_match.group(1))
+                        if tx_val is None:
+                            tx_match = re.search(pattern.replace('rx', 'tx'), data, re.MULTILINE)
+                            if tx_match:
+                                tx_val = int(tx_match.group(1))
 
                 if rx_val is not None and tx_val is not None:
                     break
