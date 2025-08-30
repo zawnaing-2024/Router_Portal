@@ -339,6 +339,7 @@ def _scheduled_hourly_report() -> None:
         return
     with app.app_context():
         devices = Device.query.order_by(Device.name.asc()).all()
+        print(f"[REPORT] Building performance report; devices found: {len(devices)}")
         # Group report lines per company
         company_to_lines = {}
         for d in devices:
@@ -385,6 +386,7 @@ def _scheduled_hourly_report() -> None:
                 continue
             settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
             if not settings or not settings.enabled:
+                print(f"[REPORT] Company {company_id}: settings missing or disabled; skipping")
                 continue
             interval = settings.report_interval_minutes or 60
 
@@ -397,18 +399,27 @@ def _scheduled_hourly_report() -> None:
                     last_sent = None
 
             should_send = last_sent is None or (now - last_sent).total_seconds() >= interval * 60
+            print(f"[REPORT] Company {company_id}: interval={interval}m last_sent={last_sent} should_send={should_send}")
             if should_send:
+                if len(lines) <= 1:
+                    print(f"[REPORT] Company {company_id}: no device lines; skipping send")
+                    continue
                 full_text = "\n".join(lines)
                 parts = _chunk_text_for_telegram(full_text)
+                print(f"[REPORT] Company {company_id}: sending report in {len(parts)} part(s)")
                 all_ok = True
                 for idx, part in enumerate(parts, start=1):
                     prefix = f"Part {idx}/{len(parts)}\n" if len(parts) > 1 else ""
                     ok = send_company_telegram_message(company_id, prefix + part)
+                    print(f"[REPORT] Company {company_id}: part {idx} send status={ok}")
                     if not ok:
                         all_ok = False
                         break
                 if all_ok:
                     settings.last_report_sent_at = now
+                    print(f"[REPORT] Company {company_id}: report sent; last_report_sent_at updated")
+            else:
+                print(f"[REPORT] Company {company_id}: not time yet; will send later")
         db.session.commit()
 
 
