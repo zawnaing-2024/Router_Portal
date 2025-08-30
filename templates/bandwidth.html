@@ -1,259 +1,159 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-2">
-  <h3 class="mb-0">Bandwidth Dashboard</h3>
-  <button id="addPanel" class="btn btn-sm btn-primary">Add Panel</button>
+  <h3 class="mb-0">Bandwidth Monitors</h3>
+  <div class="d-flex align-items-center gap-2">
+    <label class="me-1">Refresh</label>
+    <select id="interval" class="form-select form-select-sm" style="width:auto;">
+      <option value="1000">1s</option>
+      <option value="3000" selected>3s</option>
+      <option value="5000">5s</option>
+    </select>
+  </div>
   </div>
 
-<div id="panels" class="row g-3"></div>
+<div class="card mb-3">
+  <div class="card-body">
+    <form id="addForm" class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Device</label>
+        <select id="addDevice" class="form-select" required>
+          <option value="" selected disabled>Select device</option>
+          {% for d in devices %}
+          <option value="{{ d.id }}">{{ d.name }} ({{ d.host }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Interface</label>
+        <select id="addIface" class="form-select" required disabled>
+          <option value="" selected disabled>Select interface</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100" type="submit">Add Monitor</button>
+      </div>
+    </form>
+  </div>
+  </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+<div class="table-responsive">
+  <table class="table table-bordered align-middle" id="monTable">
+    <thead class="table-light">
+      <tr>
+        <th>No</th>
+        <th>Device Name</th>
+        <th>Interface Name</th>
+        <th>RX Bandwidth (Mbps)</th>
+        <th>TX Bandwidth (Mbps)</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  </div>
+
 <script>
 (() => {
-  const panelsEl = document.getElementById('panels');
-  const addPanelBtn = document.getElementById('addPanel');
+  const addDevice = document.getElementById('addDevice');
+  const addIface = document.getElementById('addIface');
+  const addForm = document.getElementById('addForm');
+  const tableBody = document.querySelector('#monTable tbody');
+  const intervalSel = document.getElementById('interval');
 
-  function makeEl(tag, cls) { const el = document.createElement(tag); if (cls) el.className = cls; return el; }
+  let timer = null;
+  let rows = []; // {id, device_id, device_name, iface, rx_el, tx_el, lastCounters}
 
-  function applyScale(chart, scaleVal) {
-    const y = chart.options.scales.y;
-    if (scaleVal === 'auto') {
-      y.min = 0; y.max = undefined; y.ticks = y.ticks || {}; y.ticks.stepSize = undefined;
-    } else {
-      const max = parseInt(scaleVal, 10); // Mbps
-      y.min = 0; y.max = max; y.ticks = y.ticks || {}; y.ticks.stepSize = 10; // 0,10,20,...
+  async function loadInterfacesForSelected() {
+    addIface.innerHTML = '<option value="" disabled selected>Loading...</option>';
+    addIface.disabled = true;
+    const id = addDevice.value;
+    if (!id) return;
+    try {
+      const r = await fetch(`/api/bandwidth/interfaces?device_id=${id}`);
+      const j = await r.json();
+      addIface.innerHTML = '<option value="" disabled selected>Select interface</option>';
+      (j.interfaces || []).forEach(n => {
+        const opt = document.createElement('option'); opt.value = n; opt.textContent = n; addIface.appendChild(opt);
+      });
+      addIface.disabled = false;
+    } catch {
+      addIface.innerHTML = '<option value="" disabled selected>Error</option>';
     }
-    chart.update('none');
   }
 
-  function createPanel() {
-    const col = makeEl('div', 'col-12');
-    const card = makeEl('div', 'card');
-    const body = makeEl('div', 'card-body');
+  function renderRows() {
+    tableBody.innerHTML = '';
+    rows.forEach((row, idx) => {
+      const tr = document.createElement('tr');
+      const tdNo = document.createElement('td'); tdNo.textContent = String(idx + 1);
+      const tdDev = document.createElement('td'); tdDev.textContent = row.device_name;
+      const tdIf = document.createElement('td'); tdIf.textContent = row.iface;
+      const tdRx = document.createElement('td'); row.rx_el = tdRx; tdRx.textContent = '-';
+      const tdTx = document.createElement('td'); row.tx_el = tdTx; tdTx.textContent = '-';
+      const tdAct = document.createElement('td');
+      const btn = document.createElement('button'); btn.className = 'btn btn-sm btn-outline-danger'; btn.textContent = 'Remove';
+      btn.addEventListener('click', () => {
+        rows = rows.filter(r => r !== row);
+        renderRows();
+      });
+      tdAct.appendChild(btn);
+      tr.appendChild(tdNo); tr.appendChild(tdDev); tr.appendChild(tdIf); tr.appendChild(tdRx); tr.appendChild(tdTx); tr.appendChild(tdAct);
+      tableBody.appendChild(tr);
+    });
+  }
 
-    const row = makeEl('div', 'row g-2 align-items-end');
-
-    const devCol = makeEl('div', 'col-md-3');
-    const devLbl = makeEl('label', 'form-label'); devLbl.textContent = 'Device';
-    const devSel = makeEl('select', 'form-select');
-    devSel.innerHTML = '<option value="" selected disabled>Select device</option>';
-    {% for d in devices %}
-    { const opt = document.createElement('option'); opt.value = '{{ d.id }}'; opt.textContent = '{{ d.name }} ({{ d.host }})'; devSel.appendChild(opt); }
-    {% endfor %}
-    devCol.appendChild(devLbl); devCol.appendChild(devSel);
-
-    const ifCol = makeEl('div', 'col-md-3');
-    const ifLbl = makeEl('label', 'form-label'); ifLbl.textContent = 'Interface';
-    const ifSel = makeEl('select', 'form-select'); ifSel.disabled = true; ifSel.innerHTML = '<option value="" disabled selected>Select interface</option>';
-    ifCol.appendChild(ifLbl); ifCol.appendChild(ifSel);
-
-    const winCol = makeEl('div', 'col-md-2');
-    const winLbl = makeEl('label', 'form-label'); winLbl.textContent = 'Window';
-    const winSel = makeEl('select', 'form-select');
-    winSel.innerHTML = '<option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option>';
-    winCol.appendChild(winLbl); winCol.appendChild(winSel);
-
-    const scaleCol = makeEl('div', 'col-md-3');
-    const scaleLbl = makeEl('label', 'form-label'); scaleLbl.textContent = 'Scale (Mbps)';
-    const scaleSel = makeEl('select', 'form-select');
-    scaleSel.innerHTML = '<option value="auto">Auto</option><option value="100">100 Mbps</option><option value="1000">1,000 Mbps (1 Gbps)</option><option value="10000">10,000 Mbps (10 Gbps)</option>';
-    scaleCol.appendChild(scaleLbl); scaleCol.appendChild(scaleSel);
-
-    const remCol = makeEl('div', 'col-md-1 text-end');
-    const remBtn = makeEl('button', 'btn btn-outline-danger btn-sm'); remBtn.textContent = 'Remove';
-    remCol.appendChild(remBtn);
-
-    row.appendChild(devCol); row.appendChild(ifCol); row.appendChild(winCol); row.appendChild(scaleCol); row.appendChild(remCol);
-
-    // Second control row: height and time range
-    const row2 = makeEl('div', 'row g-2 align-items-end mt-1');
-    const hCol = makeEl('div', 'col-md-2');
-    const hLbl = makeEl('label', 'form-label'); hLbl.textContent = 'Height';
-    const hSel = makeEl('select', 'form-select');
-    hSel.innerHTML = '<option value="60">Small</option><option value="90" selected>Medium</option><option value="140">Large</option>';
-    hCol.appendChild(hLbl); hCol.appendChild(hSel);
-
-    const fromCol = makeEl('div', 'col-md-4');
-    const fromLbl = makeEl('label', 'form-label'); fromLbl.textContent = 'From';
-    const fromInp = makeEl('input', 'form-control'); fromInp.type = 'datetime-local';
-    fromCol.appendChild(fromLbl); fromCol.appendChild(fromInp);
-
-    const toCol = makeEl('div', 'col-md-4');
-    const toLbl = makeEl('label', 'form-label'); toLbl.textContent = 'To';
-    const toInp = makeEl('input', 'form-control'); toInp.type = 'datetime-local';
-    toCol.appendChild(toLbl); toCol.appendChild(toInp);
-
-    const rangeCol = makeEl('div', 'col-md-2');
-    const applyBtn = makeEl('button', 'btn btn-outline-primary w-100'); applyBtn.textContent = 'Apply Range';
-    const clearBtn = makeEl('button', 'btn btn-outline-secondary w-100 mt-1'); clearBtn.textContent = 'Clear Range';
-    rangeCol.appendChild(applyBtn); rangeCol.appendChild(clearBtn);
-    row2.appendChild(hCol); row2.appendChild(fromCol); row2.appendChild(toCol); row2.appendChild(rangeCol);
-
-    const canvas = document.createElement('canvas'); canvas.height = 90;
-    body.appendChild(row); body.appendChild(row2); body.appendChild(makeEl('hr', 'my-2'));
-    body.appendChild(canvas);
-    card.appendChild(body); col.appendChild(card); panelsEl.appendChild(col);
-
-    const ctx = canvas.getContext('2d');
-    const chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [
-          {
-            label: 'RX (Mbps)',
-            data: [],
-            borderColor: '#0d6efd',
-            backgroundColor: 'rgba(13,110,253,0.08)',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            tension: 0.25,
-            fill: true
-          },
-          {
-            label: 'TX (Mbps)',
-            data: [],
-            borderColor: '#198754',
-            backgroundColor: 'rgba(25,135,84,0.08)',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            tension: 0.25,
-            fill: true
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        animation: false,
-        maintainAspectRatio: false,
-        interaction: { mode:'index', intersect:false },
-        scales: {
-          x: {
-            type: 'time',
-            time: { unit: 'second', displayFormats: { second: 'HH:mm:ss' } },
-            title: { display: true, text: 'Time' },
-            grid: { color: 'rgba(0,0,0,0.05)' }
-          },
-          y: {
-            beginAtZero: true,
-            title: { display: true, text: 'Mbps' },
-            grid: { color: 'rgba(0,0,0,0.05)' }
-          }
-        },
-        plugins: {
-          legend: { display: true, position: 'top' },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(2)} Mbps`
-            }
-          }
+  async function pollRow(row) {
+    try {
+      const r = await fetch(`/api/bandwidth/sample?device_id=${row.device_id}&interface=${encodeURIComponent(row.iface)}`);
+      const j = await r.json();
+      const nowTs = Date.now();
+      if (j && j.error) {
+        row.rx_el.textContent = 'error'; row.tx_el.textContent = 'error';
+        return;
+      }
+      let rxMbps = null, txMbps = null;
+      if ('rx_bps' in j) { rxMbps = (j.rx_bps || 0)/1_000_000; txMbps = (j.tx_bps || 0)/1_000_000; }
+      else if ('rx_bytes' in j && row.lastCounters) {
+        const dt = (nowTs - row.lastCounters.ts)/1000; if (dt > 0) {
+          const rx_bps = ((j.rx_bytes - row.lastCounters.rx_bytes)*8)/dt; const tx_bps = ((j.tx_bytes - row.lastCounters.tx_bytes)*8)/dt;
+          rxMbps = Math.max(0, rx_bps)/1_000_000; txMbps = Math.max(0, tx_bps)/1_000_000;
         }
       }
-    });
-
-    let timer = null;
-    let lastCounters = null; // for linux
-    const buffer = []; // {ts, rx, tx}
-    let activeRange = null; // {from, to} in ms
-
-    async function loadIfaces() {
-      ifSel.disabled = true; ifSel.innerHTML = '<option value="" disabled selected>Loading...</option>';
-      const id = devSel.value; if (!id) return;
-      try {
-        const r = await fetch(`/api/bandwidth/interfaces?device_id=${id}`);
-        const j = await r.json();
-        ifSel.innerHTML = '<option value="" disabled selected>Select interface</option>';
-        (j.interfaces || []).forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; ifSel.appendChild(o); });
-        ifSel.disabled = false;
-      } catch {}
+      if ('rx_bytes' in j) row.lastCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes };
+      else row.lastCounters = null;
+      if (rxMbps != null) row.rx_el.textContent = rxMbps.toFixed(2);
+      if (txMbps != null) row.tx_el.textContent = txMbps.toFixed(2);
+    } catch {
+      row.rx_el.textContent = 'error'; row.tx_el.textContent = 'error';
     }
-
-    function resetChart() {
-      chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = []; chart.update('none');
-    }
-
-    function trimBuffer() {
-      const maxSecs = parseInt(winSel.value || '60', 10); const now = Date.now();
-      const cutoff = now - maxSecs * 1000;
-      while (buffer.length > 0 && buffer[0].ts < cutoff) buffer.shift();
-    }
-
-    function renderFromBuffer() {
-      const maxSecs = parseInt(winSel.value || '60', 10); const now = Date.now();
-      const windowCut = now - maxSecs * 1000;
-      const from = activeRange && activeRange.from ? activeRange.from : windowCut;
-      const to = activeRange && activeRange.to ? activeRange.to : now;
-      const view = buffer.filter(p => p.ts >= windowCut && p.ts >= from && p.ts <= to);
-      chart.data.labels = view.map(p => new Date(p.ts).toISOString());
-      chart.data.datasets[0].data = view.map(p => p.rx);
-      chart.data.datasets[1].data = view.map(p => p.tx);
-      chart.update('none');
-    }
-
-    // Live badges for current RX/TX
-    const badges = makeEl('div', 'mt-2');
-    badges.innerHTML = '<span class="badge text-bg-primary me-2" id="rxb">RX: -</span><span class="badge text-bg-success" id="txb">TX: -</span>';
-    body.appendChild(badges);
-    const rxb = badges.querySelector('#rxb');
-    const txb = badges.querySelector('#txb');
-
-    async function pollOnce() {
-      const id = devSel.value; const iface = ifSel.value; if (!id || !iface) return;
-      try {
-        const r = await fetch(`/api/bandwidth/sample?device_id=${id}&interface=${encodeURIComponent(iface)}`);
-        const j = await r.json(); const nowTs = Date.now();
-        if (j && j.error) {
-          rxb.textContent = `RX: error`;
-          txb.textContent = `TX: error`;
-          return;
-        }
-        let rxMbps = null, txMbps = null;
-        if ('rx_bps' in j) { rxMbps = (j.rx_bps || 0)/1_000_000; txMbps = (j.tx_bps || 0)/1_000_000; }
-        else if ('rx_bytes' in j && lastCounters) {
-          const dt = (nowTs - lastCounters.ts)/1000; if (dt > 0) {
-            const rx_bps = ((j.rx_bytes - lastCounters.rx_bytes)*8)/dt; const tx_bps = ((j.tx_bytes - lastCounters.tx_bytes)*8)/dt;
-            rxMbps = Math.max(0, rx_bps)/1_000_000; txMbps = Math.max(0, tx_bps)/1_000_000;
-          }
-        }
-        if ('rx_bytes' in j) lastCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes }; else lastCounters = null;
-        if (rxMbps != null && txMbps != null) {
-          rxb.textContent = `RX: ${rxMbps.toFixed(1)} Mbps`;
-          txb.textContent = `TX: ${txMbps.toFixed(1)} Mbps`;
-          buffer.push({ ts: nowTs, rx: rxMbps, tx: txMbps });
-          trimBuffer();
-          renderFromBuffer();
-        }
-      } catch {}
-    }
-
-    function start() {
-      if (timer) clearInterval(timer); resetChart(); lastCounters = null; timer = setInterval(pollOnce, 3000);
-    }
-
-    devSel.addEventListener('change', loadIfaces);
-    ifSel.addEventListener('change', start);
-    winSel.addEventListener('change', () => { trimBuffer(); renderFromBuffer(); });
-    scaleSel.addEventListener('change', () => applyScale(chart, scaleSel.value));
-    hSel.addEventListener('change', () => { canvas.height = parseInt(hSel.value, 10); chart.resize(); });
-    applyBtn.addEventListener('click', () => {
-      const f = fromInp.value ? Date.parse(fromInp.value) : null;
-      const t = toInp.value ? Date.parse(toInp.value) : null;
-      activeRange = (f || t) ? { from: f || null, to: t || null } : null;
-      renderFromBuffer();
-    });
-    clearBtn.addEventListener('click', () => { fromInp.value=''; toInp.value=''; activeRange = null; renderFromBuffer(); });
-    remBtn.addEventListener('click', () => { if (timer) clearInterval(timer); col.remove(); });
-
-    // default scale: auto
-    applyScale(chart, 'auto');
-    canvas.height = parseInt(hSel.value, 10);
   }
 
-  addPanelBtn.addEventListener('click', () => createPanel());
-  // Start with one panel
-  createPanel();
+  async function pollAll() {
+    await Promise.all(rows.map(pollRow));
+  }
+
+  function startTimer() {
+    if (timer) clearInterval(timer);
+    const ms = parseInt(intervalSel.value || '3000', 10);
+    timer = setInterval(pollAll, ms);
+  }
+
+  addDevice.addEventListener('change', loadInterfacesForSelected);
+  addForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const devId = addDevice.value; const iface = addIface.value;
+    if (!devId || !iface) return;
+    const devName = addDevice.options[addDevice.selectedIndex].textContent;
+    rows.push({ device_id: devId, device_name: devName, iface, rx_el: null, tx_el: null, lastCounters: null });
+    renderRows();
+  });
+
+  intervalSel.addEventListener('change', () => startTimer());
+
+  // initial
+  renderRows();
+  startTimer();
 })();
 </script>
 {% endblock %}
