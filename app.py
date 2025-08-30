@@ -1030,6 +1030,63 @@ def create_app() -> Flask:
             db.session.commit()
         return jsonify({'success': all_ok, 'parts': statuses})
 
+    @app.route('/api/bandwidth/probe')
+    @login_required
+    def api_bandwidth_probe():
+        try:
+            device_id = int(request.args.get('device_id'))
+            if_name = request.args.get('interface')
+        except (TypeError, ValueError):
+            return jsonify({'error': 'device_id and interface required'}), 400
+        device = Device.query.get(device_id)
+        if not device:
+            return jsonify({'error': 'device not found'}), 404
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            return jsonify({'error': 'access denied'}), 403
+
+        result = {
+            'device_id': device.id,
+            'device': device.name,
+            'interface': if_name,
+            'path': None,
+            'ssh_bytes': None,
+            'ssh_monitor_rx_bps': None,
+            'ssh_monitor_tx_bps': None,
+            'snmp_bytes': None,
+        }
+
+        # SSH bytes
+        if device.device_type != 'linux':
+            pair = read_routeros_interface_bytes(device, if_name)
+            if pair:
+                result['ssh_bytes'] = {'rx': pair[0], 'tx': pair[1]}
+                result['path'] = (result['path'] or '') + ' ssh_bytes'
+            rates = get_interface_rates(device, if_name)
+            if rates:
+                result['ssh_monitor_rx_bps'] = rates['rx_bps']
+                result['ssh_monitor_tx_bps'] = rates['tx_bps']
+                result['path'] = (result['path'] or '') + ' ssh_monitor'
+
+        # SNMP bytes if available
+        if device.device_type != 'linux' and device.snmp_version == 'v2c' and device.snmp_community:
+            try:
+                snmp_pair = get_if_octets(device.host, device.snmp_community, if_name)
+            except Exception:
+                snmp_pair = None
+            if snmp_pair:
+                result['snmp_bytes'] = {'rx': snmp_pair[0], 'tx': snmp_pair[1]}
+                result['path'] = (result['path'] or '') + ' snmp'
+
+        # Linux bytes
+        if device.device_type == 'linux':
+            lpair = read_linux_interface_bytes(device, if_name)
+            if lpair:
+                result['ssh_bytes'] = {'rx': lpair[0], 'tx': lpair[1]}
+                result['path'] = (result['path'] or '') + ' linux_bytes'
+
+        return jsonify(result)
+
     @app.route('/messages', methods=['GET', 'POST'])
     @login_required
     def messages_page():

@@ -118,13 +118,26 @@
       const tdRx = document.createElement('td'); row.rx_el = tdRx; tdRx.textContent = '-';
       const tdTx = document.createElement('td'); row.tx_el = tdTx; tdTx.textContent = '-';
       const tdAct = document.createElement('td');
+      const probe = document.createElement('button'); probe.className = 'btn btn-sm btn-outline-info me-2'; probe.textContent = 'Probe';
       const btn = document.createElement('button'); btn.className = 'btn btn-sm btn-outline-danger'; btn.textContent = 'Remove';
+      probe.addEventListener('click', async () => {
+        probe.disabled = true; probe.textContent = 'Probing...';
+        try {
+          const r = await fetch(`/api/bandwidth/probe?device_id=${row.device_id}&interface=${encodeURIComponent(row.iface)}`);
+          const j = await r.json();
+          alert('Path: ' + (j.path || '-') + '\nSSH bytes: ' + JSON.stringify(j.ssh_bytes) + '\nSSH monitor bps: ' + j.ssh_monitor_rx_bps + '/' + j.ssh_monitor_tx_bps + '\nSNMP bytes: ' + JSON.stringify(j.snmp_bytes));
+        } catch(e) {
+          alert('Probe failed');
+        } finally {
+          probe.disabled = false; probe.textContent = 'Probe';
+        }
+      });
       btn.addEventListener('click', () => {
         rows = rows.filter(r => r !== row);
         renderRows();
         saveRows();
       });
-      tdAct.appendChild(btn);
+      tdAct.appendChild(probe); tdAct.appendChild(btn);
       tr.appendChild(tdNo); tr.appendChild(tdDev); tr.appendChild(tdIf); tr.appendChild(tdName); tr.appendChild(tdRx); tr.appendChild(tdTx); tr.appendChild(tdAct);
       tableBody.appendChild(tr);
     });
