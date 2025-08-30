@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone, timedelta
+import time
 from dotenv import load_dotenv
 
 from flask import Flask, render_template, request, redirect, url_for, flash
@@ -1572,22 +1573,51 @@ def create_app() -> Flask:
         if device.company_id not in user_company_ids:
             return jsonify({'error': 'access denied'}), 403
 
-        # For Mikrotik, prefer instantaneous rates; fallback to byte counters
+        # Server-side delta calculator to produce bps reliably
+        print(f"[BW] sample request: device_id={device.id} name={device.name} type={device.device_type} iface={if_name}")
+        key = (device.id, if_name)
+        now_epoch = time.time()
+
+        # First, try byte counters (preferred for reliability)
+        if device.device_type == 'linux':
+            pair = read_linux_interface_bytes(device, if_name)
+        else:
+            pair = read_routeros_interface_bytes(device, if_name)
+
+        if pair:
+            print(f"[BW] counters read: rx_bytes={pair[0]} tx_bytes={pair[1]}")
+            prev = getattr(app, '_bw_last', {}).get(key) if hasattr(app, '_bw_last') else None
+            if not hasattr(app, '_bw_last'):
+                app._bw_last = {}
+            app._bw_last[key] = (now_epoch, pair[0], pair[1])
+            if prev:
+                dt = max(0.001, now_epoch - prev[0])
+                d_rx = pair[0] - prev[1]
+                d_tx = pair[1] - prev[2]
+                # Handle counter wrap by clamping negatives to zero
+                if d_rx < 0:
+                    print(f"[BW] rx wrap detected: prev={prev[1]} curr={pair[0]}")
+                    d_rx = 0
+                if d_tx < 0:
+                    print(f"[BW] tx wrap detected: prev={prev[2]} curr={pair[1]}")
+                    d_tx = 0
+                rx_bps = (d_rx * 8.0) / dt
+                tx_bps = (d_tx * 8.0) / dt
+                print(f"[BW] computed bps: dt={dt:.3f}s rx_bps={rx_bps:.0f} tx_bps={tx_bps:.0f}")
+                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': rx_bps, 'tx_bps': tx_bps})
+            # First sample: return counters so client can show pending
+            print("[BW] first sample for this key; returning counters only")
+            return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': pair[0], 'tx_bytes': pair[1]})
+
+        # If counters unavailable (e.g., permission), try Mikrotik instantaneous rates
         if device.device_type != 'linux':
             res = get_interface_rates(device, if_name)
             if res:
+                print(f"[BW] monitor-traffic fallback used: rx={res['rx_bps']} tx={res['tx_bps']}")
                 return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': res['rx_bps'], 'tx_bps': res['tx_bps']})
-            # fallback: use rx/tx byte counters for Linux-like diff on client
-            pair = read_routeros_interface_bytes(device, if_name)
-            if pair:
-                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': pair[0], 'tx_bytes': pair[1]})
-            return jsonify({'error': 'rate not available'}), 502
 
-        # For Linux, return byte counters; client will diff to bps
-        bytes_pair = read_linux_interface_bytes(device, if_name)
-        if not bytes_pair:
-            return jsonify({'error': 'counters not available'}), 502
-        return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': bytes_pair[0], 'tx_bytes': bytes_pair[1]})
+        print("[BW] rate not available after all attempts")
+        return jsonify({'error': 'rate not available'}), 502
 
     return app
 

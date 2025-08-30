@@ -386,8 +386,10 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
         ]
         for cmd in variants:
             try:
+                print(f"[BW] running cmd: {cmd}")
                 _, out, _ = client.exec_command(cmd)
                 tmp = out.read().decode(errors='ignore')
+                print(f"[BW] cmd output: {tmp.strip()[:200]}")
                 if tmp and tmp.strip():
                     data = tmp
                     break
@@ -401,6 +403,7 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
     rx = None
     tx = None
     for line in data.splitlines():
+        print(f"[BW] parse line: {line.strip()}")
         # Support both ": value" and "=value" forms, allow spaces and decimals within digits
         mrx = re.search(r"rx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
         if mrx:
@@ -435,10 +438,12 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
             # First sample
             cmd_rx1 = f"/interface get [find name=\"{interface_name}\"] rx-byte"
             cmd_tx1 = f"/interface get [find name=\"{interface_name}\"] tx-byte"
+            print(f"[BW] bytes first sample: {cmd_rx1} | {cmd_tx1}")
             _, out1, _ = client.exec_command(cmd_rx1)
             _, out2, _ = client.exec_command(cmd_tx1)
             s1 = out1.read().decode(errors='ignore')
             s2 = out2.read().decode(errors='ignore')
+            print(f"[BW] bytes first output: rx={s1.strip()} tx={s2.strip()}")
             m1 = re.search(r"([0-9]+)", s1 or '')
             m2 = re.search(r"([0-9]+)", s2 or '')
             if not (m1 and m2):
@@ -451,6 +456,7 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
             _, out4, _ = client.exec_command(cmd_tx1)
             s3 = out3.read().decode(errors='ignore')
             s4 = out4.read().decode(errors='ignore')
+            print(f"[BW] bytes second output: rx={s3.strip()} tx={s4.strip()}")
             client.close()
             m3 = re.search(r"([0-9]+)", s3 or '')
             m4 = re.search(r"([0-9]+)", s4 or '')
