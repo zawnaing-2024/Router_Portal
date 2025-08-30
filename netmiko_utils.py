@@ -498,13 +498,34 @@ def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple
     """
     try:
         client = _open_ssh_client(device)
-        # Try ethernet monitor first, then print stats - these give actual counters
-        cmds = [
-            f"/interface ethernet monitor {interface_name} once",
-            f"/interface monitor {interface_name} once",
-            f"/interface print where name=\"{interface_name}\" stats detail",
-            f"/interface print where name=\"{interface_name}\" stats",
-        ]
+
+        # First check if interface exists and get its type
+        check_cmd = f"/interface print where name=\"{interface_name}\""
+        print(f"[BW] check cmd: {check_cmd}")
+        _, chk_out, _ = client.exec_command(check_cmd)
+        chk_data = chk_out.read().decode(errors='ignore')
+        print(f"[BW] check output: {chk_data.strip()[:200]}")
+        if not chk_data.strip():
+            print("[BW] interface not found")
+            client.close()
+            return None
+
+        # Try different monitor commands based on interface type
+        cmds = []
+        # Try ethernet first
+        cmds.append(f"/interface ethernet monitor {interface_name} once")
+        # Try general interface monitor
+        cmds.append(f"/interface monitor {interface_name} once")
+        # Try wireless monitor if it's a wireless interface
+        if "wlan" in interface_name.lower() or "wireless" in interface_name.lower():
+            cmds.append(f"/interface wireless monitor {interface_name} once")
+        # Try bridge monitor
+        if "bridge" in interface_name.lower():
+            cmds.append(f"/interface bridge monitor {interface_name} once")
+        # Try vlan monitor
+        if "vlan" in interface_name.lower():
+            cmds.append(f"/interface vlan monitor {interface_name} once")
+
         rx_val = None
         tx_val = None
         for cmd in cmds:
@@ -513,33 +534,39 @@ def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple
                 _, out, _ = client.exec_command(cmd)
                 data = out.read().decode(errors='ignore')
                 print(f"[BW] counter output: {data[:400]}")
-                # Parse from ethernet monitor format
-                rx_match = re.search(r"rx-byte\s*:\s*([0-9]+)", data, re.MULTILINE)
-                if rx_match:
-                    rx_val = int(rx_match.group(1))
-                tx_match = re.search(r"tx-byte\s*:\s*([0-9]+)", data, re.MULTILINE)
-                if tx_match:
-                    tx_val = int(tx_match.group(1))
-                # Also try rx-bytes/tx-bytes
-                if rx_val is None:
-                    rx_match = re.search(r"rx-bytes\s*:\s*([0-9]+)", data, re.MULTILINE)
-                    if rx_match:
-                        rx_val = int(rx_match.group(1))
-                if tx_val is None:
-                    tx_match = re.search(r"tx-bytes\s*:\s*([0-9]+)", data, re.MULTILINE)
-                    if tx_match:
-                        tx_val = int(tx_match.group(1))
+
+                # Parse various possible formats
+                patterns = [
+                    r"rx-byte\s*:\s*([0-9]+)",
+                    r"rx-bytes\s*:\s*([0-9]+)",
+                    r"rx-byte\s*=\s*([0-9]+)",
+                    r"rx-bytes\s*=\s*([0-9]+)",
+                    r"rx\s*:\s*([0-9]+)",
+                ]
+                for pattern in patterns:
+                    if rx_val is None:
+                        rx_match = re.search(pattern, data, re.MULTILINE)
+                        if rx_match:
+                            rx_val = int(rx_match.group(1))
+                    if tx_val is None:
+                        tx_match = re.search(pattern.replace('rx', 'tx'), data, re.MULTILINE)
+                        if tx_match:
+                            tx_val = int(tx_match.group(1))
+
                 if rx_val is not None and tx_val is not None:
                     break
-            except Exception:
+            except Exception as e:
+                print(f"[BW] cmd failed: {e}")
                 continue
+
         client.close()
         if rx_val is not None and tx_val is not None:
             print(f"[BW] ssh bytes parsed: rx={rx_val} tx={tx_val}")
             return rx_val, tx_val
-        print("[BW] ssh bytes unavailable")
+        print("[BW] ssh bytes unavailable - all commands failed")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[BW] ssh bytes exception: {e}")
         return None
 
 
