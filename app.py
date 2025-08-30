@@ -20,6 +20,7 @@ from scheduler import _chunk_text_for_telegram
 from netmiko_utils import perform_manual_backup
 from telegram_utils import send_telegram_message, send_telegram_message_with_details
 from netmiko_utils import list_interfaces, get_interface_rates, read_linux_interface_bytes, read_routeros_interface_bytes
+from snmp_utils import get_if_octets
 import requests
 from snmp_utils import get_interface_status_and_power
 
@@ -1609,7 +1610,30 @@ def create_app() -> Flask:
             print("[BW] first sample for this key; returning counters only")
             return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': pair[0], 'tx_bytes': pair[1]})
 
-        # If counters unavailable (e.g., permission), try Mikrotik instantaneous rates
+        # If counters unavailable (e.g., permission), try SNMP counters next (if configured)
+        if device.device_type != 'linux' and device.snmp_version == 'v2c' and device.snmp_community:
+            snmp_pair = get_if_octets(device.host, device.snmp_community, if_name)
+            if snmp_pair:
+                print(f"[BW] SNMP counters: rx={snmp_pair[0]} tx={snmp_pair[1]}")
+                prev = getattr(app, '_bw_last', {}).get(key) if hasattr(app, '_bw_last') else None
+                if not hasattr(app, '_bw_last'):
+                    app._bw_last = {}
+                app._bw_last[key] = (now_epoch, snmp_pair[0], snmp_pair[1])
+                if prev:
+                    dt = max(0.001, now_epoch - prev[0])
+                    d_rx = snmp_pair[0] - prev[1]
+                    d_tx = snmp_pair[1] - prev[2]
+                    if d_rx < 0:
+                        d_rx = 0
+                    if d_tx < 0:
+                        d_tx = 0
+                    rx_bps = (d_rx * 8.0) / dt
+                    tx_bps = (d_tx * 8.0) / dt
+                    print(f"[BW] SNMP computed bps: dt={dt:.3f}s rx={rx_bps:.0f} tx={tx_bps:.0f}")
+                    return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': rx_bps, 'tx_bps': tx_bps})
+                return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': snmp_pair[0], 'tx_bytes': snmp_pair[1]})
+
+        # Finally, try Mikrotik instantaneous rates
         if device.device_type != 'linux':
             res = get_interface_rates(device, if_name)
             if res:

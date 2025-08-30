@@ -5,6 +5,8 @@ import re
 
 
 IF_NAME = '1.3.6.1.2.1.31.1.1.1.1'  # ifName
+IF_HC_IN_OCTETS = '1.3.6.1.2.1.31.1.1.1.6'   # ifHCInOctets
+IF_HC_OUT_OCTETS = '1.3.6.1.2.1.31.1.1.1.10' # ifHCOutOctets
 IF_OPER_STATUS = '1.3.6.1.2.1.2.2.1.8'  # 1=up,2=down
 
 # MikroTik optical MIB numeric OIDs
@@ -26,6 +28,33 @@ def walk_if_names(host: str, community: str) -> Dict[str, int]:
             name = str(val)
         names[name] = idx
     return names
+
+
+def get_if_octets(host: str, community: str, if_name: str) -> Optional[tuple[int, int]]:
+    """Return (rx_bytes, tx_bytes) for an interface via SNMP ifHC* counters."""
+    try:
+        name_to_index = walk_if_names(host, community)
+        idx = name_to_index.get(if_name)
+        if not idx:
+            return None
+        from puresnmp import Client  # type: ignore
+        client = Client(host, community)
+        rx = client.get(f'{IF_HC_IN_OCTETS}.{idx}')
+        tx = client.get(f'{IF_HC_OUT_OCTETS}.{idx}')
+        def _to_int(v):
+            if isinstance(v, (bytes, bytearray)):
+                v = v.decode('utf-8', errors='ignore')
+            try:
+                return int(str(v))
+            except Exception:
+                return None
+        rx_i = _to_int(rx)
+        tx_i = _to_int(tx)
+        if rx_i is None or tx_i is None:
+            return None
+        return rx_i, tx_i
+    except Exception:
+        return None
 def _parse_power(value: Any) -> Optional[float]:
     # Handles numeric, bytes, or strings like '-3.2 dBm' or '-32'
     try:
