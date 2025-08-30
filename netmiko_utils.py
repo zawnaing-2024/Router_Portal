@@ -397,7 +397,7 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
     except Exception:
         return None
     if not data:
-        return None
+        data = ''
     rx = None
     tx = None
     for line in data.splitlines():
@@ -428,6 +428,38 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
                     tx = float(mtx2.group(1).replace(' ', ''))
                 except ValueError:
                     pass
+    # If not available or zero, try computing from byte counters over ~1s
+    if (rx is None and tx is None) or ((rx or 0.0) == 0.0 and (tx or 0.0) == 0.0):
+        try:
+            client = _open_ssh_client(device)
+            # First sample
+            cmd_rx1 = f"/interface get [find name=\"{interface_name}\"] rx-byte"
+            cmd_tx1 = f"/interface get [find name=\"{interface_name}\"] tx-byte"
+            _, out1, _ = client.exec_command(cmd_rx1)
+            _, out2, _ = client.exec_command(cmd_tx1)
+            s1 = out1.read().decode(errors='ignore')
+            s2 = out2.read().decode(errors='ignore')
+            m1 = re.search(r"([0-9]+)", s1 or '')
+            m2 = re.search(r"([0-9]+)", s2 or '')
+            if not (m1 and m2):
+                client.close()
+                return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0} if (rx is not None or tx is not None) else None
+            rx1 = int(m1.group(1)); tx1 = int(m2.group(1))
+            time.sleep(1.0)
+            # Second sample
+            _, out3, _ = client.exec_command(cmd_rx1)
+            _, out4, _ = client.exec_command(cmd_tx1)
+            s3 = out3.read().decode(errors='ignore')
+            s4 = out4.read().decode(errors='ignore')
+            client.close()
+            m3 = re.search(r"([0-9]+)", s3 or '')
+            m4 = re.search(r"([0-9]+)", s4 or '')
+            if m3 and m4:
+                rx2 = int(m3.group(1)); tx2 = int(m4.group(1))
+                rx = max(0.0, float(rx2 - rx1)) * 8.0  # bytes->bits per ~1s
+                tx = max(0.0, float(tx2 - tx1)) * 8.0
+        except Exception:
+            pass
     if rx is None and tx is None:
         return None
     return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0}
