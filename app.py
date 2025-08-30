@@ -18,6 +18,7 @@ from scheduler import scheduler, add_or_update_backup_job, remove_backup_job, st
 from scheduler import _chunk_text_for_telegram
 from netmiko_utils import perform_manual_backup
 from telegram_utils import send_telegram_message, send_telegram_message_with_details
+from netmiko_utils import list_interfaces, get_interface_rates, read_linux_interface_bytes
 import requests
 from snmp_utils import get_interface_status_and_power
 
@@ -1529,6 +1530,60 @@ def create_app() -> Flask:
                 })
 
         return render_template('admin_user.html', user=user, companies=companies, assigned_companies=assigned_companies)
+
+    @app.route('/bandwidth')
+    @login_required
+    def bandwidth_page():
+        # User's accessible devices
+        user_company_ids = get_user_company_ids(current_user.id)
+        devices = Device.query.filter(Device.company_id.in_(user_company_ids)).order_by(Device.name.asc()).all()
+        return render_template('bandwidth.html', devices=devices)
+
+    @app.route('/api/bandwidth/interfaces')
+    @login_required
+    def api_bandwidth_interfaces():
+        try:
+            device_id = int(request.args.get('device_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'device_id required'}), 400
+        device = Device.query.get(device_id)
+        if not device:
+            return jsonify({'error': 'device not found'}), 404
+        # Access control
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            return jsonify({'error': 'access denied'}), 403
+        names = list_interfaces(device) or []
+        return jsonify({'interfaces': names})
+
+    @app.route('/api/bandwidth/sample')
+    @login_required
+    def api_bandwidth_sample():
+        try:
+            device_id = int(request.args.get('device_id'))
+            if_name = request.args.get('interface')
+        except (TypeError, ValueError):
+            return jsonify({'error': 'device_id and interface required'}), 400
+        device = Device.query.get(device_id)
+        if not device:
+            return jsonify({'error': 'device not found'}), 404
+        # Access control
+        user_company_ids = get_user_company_ids(current_user.id)
+        if device.company_id not in user_company_ids:
+            return jsonify({'error': 'access denied'}), 403
+
+        # For Mikrotik, return instantaneous rates
+        if device.device_type != 'linux':
+            res = get_interface_rates(device, if_name)
+            if not res:
+                return jsonify({'error': 'rate not available'}), 502
+            return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bps': res['rx_bps'], 'tx_bps': res['tx_bps']})
+
+        # For Linux, return byte counters; client will diff to bps
+        bytes_pair = read_linux_interface_bytes(device, if_name)
+        if not bytes_pair:
+            return jsonify({'error': 'counters not available'}), 502
+        return jsonify({'ts': datetime.now(timezone.utc).isoformat(), 'rx_bytes': bytes_pair[0], 'tx_bytes': bytes_pair[1]})
 
     return app
 

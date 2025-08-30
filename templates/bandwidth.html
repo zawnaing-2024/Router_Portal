@@ -1,0 +1,171 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-2">
+  <h3 class="mb-0">Bandwidth</h3>
+  <div class="text-muted small">Live interface throughput</div>
+  </div>
+
+<div class="row g-3 align-items-end">
+  <div class="col-md-4">
+    <label class="form-label">Device</label>
+    <select id="device" class="form-select">
+      <option value="" selected disabled>Select device</option>
+      {% for d in devices %}
+      <option value="{{ d.id }}">{{ d.name }} ({{ d.host }})</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Interface</label>
+    <select id="iface" class="form-select" disabled>
+      <option value="" selected disabled>Select interface</option>
+    </select>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Window</label>
+    <select id="window" class="form-select">
+      <option value="60">1 minute</option>
+      <option value="300">5 minutes</option>
+      <option value="900">15 minutes</option>
+    </select>
+  </div>
+</div>
+
+<div class="card mt-3">
+  <div class="card-body">
+    <canvas id="bwChart" height="120"></canvas>
+  </div>
+</div>
+
+<p class="text-muted mt-2" id="status">Select device and interface to start.</p>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(() => {
+  const deviceSel = document.getElementById('device');
+  const ifaceSel = document.getElementById('iface');
+  const windowSel = document.getElementById('window');
+  const statusEl = document.getElementById('status');
+
+  const ctx = document.getElementById('bwChart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {label: 'RX (Mbps)', data: [], borderColor: '#0d6efd', tension: 0.2},
+        {label: 'TX (Mbps)', data: [], borderColor: '#198754', tension: 0.2}
+      ]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { title: { display: true, text: 'Mbps' } },
+        x: { title: { display: true, text: 'Time' } }
+      }
+    }
+  });
+
+  let timer = null;
+  let lastLinuxCounters = null; // {ts, rx_bytes, tx_bytes}
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  async function loadInterfaces() {
+    ifaceSel.innerHTML = '<option value="" disabled selected>Loading...</option>';
+    ifaceSel.disabled = true;
+    const id = deviceSel.value;
+    if (!id) return;
+    try {
+      const r = await fetch(`/api/bandwidth/interfaces?device_id=${id}`);
+      const j = await r.json();
+      ifaceSel.innerHTML = '<option value="" disabled selected>Select interface</option>';
+      (j.interfaces || []).forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n; opt.textContent = n; ifaceSel.appendChild(opt);
+      });
+      ifaceSel.disabled = false;
+      setStatus('Select interface.');
+    } catch (e) {
+      setStatus('Failed to load interfaces.');
+    }
+  }
+
+  function resetChart() {
+    chart.data.labels = [];
+    chart.data.datasets[0].data = [];
+    chart.data.datasets[1].data = [];
+    chart.update();
+  }
+
+  function trimWindow() {
+    const maxSecs = parseInt(windowSel.value || '60', 10);
+    const now = Date.now();
+    while (chart.data.labels.length > 0) {
+      const oldest = chart.data.labels[0]._ts || chart.data.labels[0];
+      const ageSec = (now - oldest) / 1000;
+      if (ageSec > maxSecs) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+        chart.data.datasets[1].data.shift();
+      } else break;
+    }
+  }
+
+  async function pollOnce() {
+    const id = deviceSel.value;
+    const iface = ifaceSel.value;
+    if (!id || !iface) return;
+    try {
+      const r = await fetch(`/api/bandwidth/sample?device_id=${id}&interface=${encodeURIComponent(iface)}`);
+      const j = await r.json();
+      const nowTs = Date.now();
+      let rxMbps = null, txMbps = null;
+      if ('rx_bps' in j) {
+        rxMbps = (j.rx_bps || 0) / 1_000_000;
+        txMbps = (j.tx_bps || 0) / 1_000_000;
+      } else if ('rx_bytes' in j && lastLinuxCounters) {
+        const dt = (nowTs - lastLinuxCounters.ts) / 1000; // seconds
+        if (dt > 0) {
+          const rx_bps = ((j.rx_bytes - lastLinuxCounters.rx_bytes) * 8) / dt;
+          const tx_bps = ((j.tx_bytes - lastLinuxCounters.tx_bytes) * 8) / dt;
+          rxMbps = Math.max(0, rx_bps) / 1_000_000;
+          txMbps = Math.max(0, tx_bps) / 1_000_000;
+        }
+      }
+      if ('rx_bytes' in j) {
+        lastLinuxCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes };
+      } else {
+        lastLinuxCounters = null;
+      }
+      if (rxMbps != null && txMbps != null) {
+        chart.data.labels.push(Object.assign(new Date(nowTs).toLocaleTimeString(), { _ts: nowTs }));
+        chart.data.datasets[0].data.push(rxMbps);
+        chart.data.datasets[1].data.push(txMbps);
+        trimWindow();
+        chart.update();
+      }
+    } catch (e) {
+      // ignore one-off errors
+    }
+  }
+
+  function start() {
+    if (timer) clearInterval(timer);
+    resetChart();
+    lastLinuxCounters = null;
+    setStatus('Polling...');
+    // 3-second poll for smoother lines
+    timer = setInterval(pollOnce, 3000);
+  }
+
+  deviceSel.addEventListener('change', loadInterfaces);
+  ifaceSel.addEventListener('change', start);
+  windowSel.addEventListener('change', () => { trimWindow(); chart.update(); });
+})();
+</script>
+{% endblock %}
+
+

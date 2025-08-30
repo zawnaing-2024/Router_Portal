@@ -324,3 +324,98 @@ def run_ping_on_router(device, target_ip: str, source_ip: Optional[str] = None, 
     return None
 
 
+def list_interfaces(device) -> Optional[list[str]]:
+    """Return list of interface names on the device.
+
+    - Mikrotik: parse /interface print detail for name= fields
+    - Linux: list /sys/class/net entries (excluding lo)
+    """
+    if getattr(device, 'device_type', 'mikrotik') == 'linux':
+        try:
+            client = _open_ssh_client(device)
+            _, out, _ = client.exec_command("ls -1 /sys/class/net | grep -v '^lo$'")
+            data = out.read().decode(errors='ignore')
+            client.close()
+            names = [ln.strip() for ln in data.splitlines() if ln.strip()]
+            return names
+        except Exception:
+            return None
+    # Mikrotik
+    try:
+        client = _open_ssh_client(device)
+        _, out, _ = client.exec_command("/interface print detail without-paging")
+        data = out.read().decode(errors='ignore')
+        client.close()
+    except Exception:
+        return None
+    names: list[str] = []
+    for line in data.splitlines():
+        m = re.search(r"\bname=([^\s]+)", line)
+        if m:
+            names.append(m.group(1))
+    # de-duplicate while preserving order
+    seen = set()
+    unique = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+
+def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float]]:
+    """Return instantaneous rx/tx rates in bits per second.
+
+    - Mikrotik: use /interface monitor-traffic ... once
+    - Linux: not available directly; return None (computed in app using byte counters)
+    """
+    if getattr(device, 'device_type', 'mikrotik') == 'linux':
+        return None
+    try:
+        client = _open_ssh_client(device)
+        cmd = f"/interface monitor-traffic interface={interface_name} once without-paging"
+        _, out, _ = client.exec_command(cmd)
+        data = out.read().decode(errors='ignore')
+        client.close()
+    except Exception:
+        return None
+    rx = None
+    tx = None
+    for line in data.splitlines():
+        mrx = re.search(r"rx-bits-per-second\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        if mrx:
+            try:
+                rx = float(mrx.group(1))
+            except ValueError:
+                pass
+        mtx = re.search(r"tx-bits-per-second\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        if mtx:
+            try:
+                tx = float(mtx.group(1))
+            except ValueError:
+                pass
+    if rx is None and tx is None:
+        return None
+    return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0}
+
+
+def read_linux_interface_bytes(device, interface_name: str) -> Optional[Tuple[int, int]]:
+    """Read rx/tx byte counters for a Linux interface."""
+    try:
+        client = _open_ssh_client(device)
+        cmd = (
+            f"cat /sys/class/net/{interface_name}/statistics/rx_bytes;"
+            f"echo -n ' ';"
+            f"cat /sys/class/net/{interface_name}/statistics/tx_bytes"
+        )
+        _, out, _ = client.exec_command(cmd)
+        data = out.read().decode(errors='ignore').strip()
+        client.close()
+        parts = data.split()
+        if len(parts) >= 2:
+            return int(parts[0]), int(parts[1])
+        return None
+    except Exception:
+        return None
+
+

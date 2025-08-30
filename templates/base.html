@@ -16,6 +16,7 @@
           <a class="btn btn-sm btn-outline-light me-2" href="{{ url_for('backup_page') }}">Backups</a>
           <a class="btn btn-sm btn-outline-warning me-2" href="{{ url_for('backup_files') }}">Backup Files</a>
           <a class="btn btn-sm btn-outline-info" href="{{ url_for('pings_page') }}">Pings</a>
+          <a class="btn btn-sm btn-outline-secondary ms-2" href="{{ url_for('bandwidth_page') }}">Bandwidth</a>
           <a class="btn btn-sm btn-outline-success ms-2" href="{{ url_for('messages_page') }}">Messages</a>
           <a class="btn btn-sm btn-outline-warning ms-2" href="{{ url_for('fibers_page') }}">Fiber</a>
           {% if current_user.is_superadmin %}
