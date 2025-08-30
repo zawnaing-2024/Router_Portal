@@ -65,8 +65,32 @@
 
     row.appendChild(devCol); row.appendChild(ifCol); row.appendChild(winCol); row.appendChild(scaleCol); row.appendChild(remCol);
 
+    // Second control row: height and time range
+    const row2 = makeEl('div', 'row g-2 align-items-end mt-1');
+    const hCol = makeEl('div', 'col-md-2');
+    const hLbl = makeEl('label', 'form-label'); hLbl.textContent = 'Height';
+    const hSel = makeEl('select', 'form-select');
+    hSel.innerHTML = '<option value="60">Small</option><option value="90" selected>Medium</option><option value="140">Large</option>';
+    hCol.appendChild(hLbl); hCol.appendChild(hSel);
+
+    const fromCol = makeEl('div', 'col-md-4');
+    const fromLbl = makeEl('label', 'form-label'); fromLbl.textContent = 'From';
+    const fromInp = makeEl('input', 'form-control'); fromInp.type = 'datetime-local';
+    fromCol.appendChild(fromLbl); fromCol.appendChild(fromInp);
+
+    const toCol = makeEl('div', 'col-md-4');
+    const toLbl = makeEl('label', 'form-label'); toLbl.textContent = 'To';
+    const toInp = makeEl('input', 'form-control'); toInp.type = 'datetime-local';
+    toCol.appendChild(toLbl); toCol.appendChild(toInp);
+
+    const rangeCol = makeEl('div', 'col-md-2');
+    const applyBtn = makeEl('button', 'btn btn-outline-primary w-100'); applyBtn.textContent = 'Apply Range';
+    const clearBtn = makeEl('button', 'btn btn-outline-secondary w-100 mt-1'); clearBtn.textContent = 'Clear Range';
+    rangeCol.appendChild(applyBtn); rangeCol.appendChild(clearBtn);
+    row2.appendChild(hCol); row2.appendChild(fromCol); row2.appendChild(toCol); row2.appendChild(rangeCol);
+
     const canvas = document.createElement('canvas'); canvas.height = 90;
-    body.appendChild(row); body.appendChild(makeEl('hr', 'my-3'));
+    body.appendChild(row); body.appendChild(row2); body.appendChild(makeEl('hr', 'my-2'));
     body.appendChild(canvas);
     card.appendChild(body); col.appendChild(card); panelsEl.appendChild(col);
 
@@ -82,6 +106,8 @@
 
     let timer = null;
     let lastCounters = null; // for linux
+    const buffer = []; // {ts, rx, tx}
+    let activeRange = null; // {from, to} in ms
 
     async function loadIfaces() {
       ifSel.disabled = true; ifSel.innerHTML = '<option value="" disabled selected>Loading...</option>';
@@ -99,12 +125,22 @@
       chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = []; chart.update('none');
     }
 
-    function trimWindow() {
+    function trimBuffer() {
       const maxSecs = parseInt(winSel.value || '60', 10); const now = Date.now();
-      while (chart.data.labels.length > 0) {
-        const oldest = chart.data.labels[0]._ts || chart.data.labels[0];
-        if ((now - oldest)/1000 > maxSecs) { chart.data.labels.shift(); chart.data.datasets[0].data.shift(); chart.data.datasets[1].data.shift(); } else break;
-      }
+      const cutoff = now - maxSecs * 1000;
+      while (buffer.length > 0 && buffer[0].ts < cutoff) buffer.shift();
+    }
+
+    function renderFromBuffer() {
+      const maxSecs = parseInt(winSel.value || '60', 10); const now = Date.now();
+      const windowCut = now - maxSecs * 1000;
+      const from = activeRange && activeRange.from ? activeRange.from : windowCut;
+      const to = activeRange && activeRange.to ? activeRange.to : now;
+      const view = buffer.filter(p => p.ts >= windowCut && p.ts >= from && p.ts <= to);
+      chart.data.labels = view.map(p => Object.assign(new Date(p.ts).toLocaleTimeString(), { _ts: p.ts }));
+      chart.data.datasets[0].data = view.map(p => p.rx);
+      chart.data.datasets[1].data = view.map(p => p.tx);
+      chart.update('none');
     }
 
     // Live badges for current RX/TX
@@ -131,9 +167,9 @@
         if (rxMbps != null && txMbps != null) {
           rxb.textContent = `RX: ${rxMbps.toFixed(1)} Mbps`;
           txb.textContent = `TX: ${txMbps.toFixed(1)} Mbps`;
-          chart.data.labels.push(Object.assign(new Date(nowTs).toLocaleTimeString(), { _ts: nowTs }));
-          chart.data.datasets[0].data.push(rxMbps); chart.data.datasets[1].data.push(txMbps);
-          trimWindow(); chart.update();
+          buffer.push({ ts: nowTs, rx: rxMbps, tx: txMbps });
+          trimBuffer();
+          renderFromBuffer();
         }
       } catch {}
     }
@@ -144,12 +180,21 @@
 
     devSel.addEventListener('change', loadIfaces);
     ifSel.addEventListener('change', start);
-    winSel.addEventListener('change', () => { trimWindow(); chart.update('none'); });
+    winSel.addEventListener('change', () => { trimBuffer(); renderFromBuffer(); });
     scaleSel.addEventListener('change', () => applyScale(chart, scaleSel.value));
+    hSel.addEventListener('change', () => { canvas.height = parseInt(hSel.value, 10); chart.resize(); });
+    applyBtn.addEventListener('click', () => {
+      const f = fromInp.value ? Date.parse(fromInp.value) : null;
+      const t = toInp.value ? Date.parse(toInp.value) : null;
+      activeRange = (f || t) ? { from: f || null, to: t || null } : null;
+      renderFromBuffer();
+    });
+    clearBtn.addEventListener('click', () => { fromInp.value=''; toInp.value=''; activeRange = null; renderFromBuffer(); });
     remBtn.addEventListener('click', () => { if (timer) clearInterval(timer); col.remove(); });
 
     // default scale: auto
     applyScale(chart, 'auto');
+    canvas.height = parseInt(hSel.value, 10);
   }
 
   addPanelBtn.addEventListener('click', () => createPanel());
