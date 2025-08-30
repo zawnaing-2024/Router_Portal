@@ -204,6 +204,11 @@
       try {
         const r = await fetch(`/api/bandwidth/sample?device_id=${id}&interface=${encodeURIComponent(iface)}`);
         const j = await r.json(); const nowTs = Date.now();
+        if (j && j.error) {
+          rxb.textContent = `RX: error`;
+          txb.textContent = `TX: error`;
+          return;
+        }
         let rxMbps = null, txMbps = null;
         if ('rx_bps' in j) { rxMbps = (j.rx_bps || 0)/1_000_000; txMbps = (j.tx_bps || 0)/1_000_000; }
         else if ('rx_bytes' in j && lastCounters) {

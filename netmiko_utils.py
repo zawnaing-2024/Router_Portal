@@ -380,6 +380,9 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
             f"/interface monitor-traffic interface={interface_name} once without-paging",
             f"/interface/monitor-traffic interface=\"{interface_name}\" once without-paging",
             f"/tool/monitor-traffic interface=\"{interface_name}\" once without-paging",
+            # as-value variants often produce key=value which are easier to parse
+            f"/interface monitor-traffic interface=\"{interface_name}\" once as-value",
+            f"/interface monitor-traffic interface={interface_name} once as-value",
         ]
         for cmd in variants:
             try:
@@ -398,27 +401,28 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
     rx = None
     tx = None
     for line in data.splitlines():
-        mrx = re.search(r"rx-bits-per-second\s*:\s*([0-9 ][0-9 ]*)", line, re.IGNORECASE)
+        # Support both ": value" and "=value" forms, allow spaces and decimals within digits
+        mrx = re.search(r"rx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
         if mrx:
             try:
                 rx = float(mrx.group(1).replace(' ', ''))
             except ValueError:
                 pass
-        mtx = re.search(r"tx-bits-per-second\s*:\s*([0-9 ][0-9 ]*)", line, re.IGNORECASE)
+        mtx = re.search(r"tx-bits-per-second\s*[:=]\s*([0-9. ][0-9. ]*)", line, re.IGNORECASE)
         if mtx:
             try:
                 tx = float(mtx.group(1).replace(' ', ''))
             except ValueError:
                 pass
         if rx is None:
-            mrx2 = re.search(r"rx-rate\s*:\s*([0-9 ][0-9 ]*)\s*bps", line, re.IGNORECASE)
+            mrx2 = re.search(r"rx-rate\s*[:=]\s*([0-9. ][0-9. ]*)\s*bps", line, re.IGNORECASE)
             if mrx2:
                 try:
                     rx = float(mrx2.group(1).replace(' ', ''))
                 except ValueError:
                     pass
         if tx is None:
-            mtx2 = re.search(r"tx-rate\s*:\s*([0-9 ][0-9 ]*)\s*bps", line, re.IGNORECASE)
+            mtx2 = re.search(r"tx-rate\s*[:=]\s*([0-9. ][0-9. ]*)\s*bps", line, re.IGNORECASE)
             if mtx2:
                 try:
                     tx = float(mtx2.group(1).replace(' ', ''))
