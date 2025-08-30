@@ -65,7 +65,7 @@
 
     row.appendChild(devCol); row.appendChild(ifCol); row.appendChild(winCol); row.appendChild(scaleCol); row.appendChild(remCol);
 
-    const canvas = document.createElement('canvas'); canvas.height = 120;
+    const canvas = document.createElement('canvas'); canvas.height = 90;
     body.appendChild(row); body.appendChild(makeEl('hr', 'my-3'));
     body.appendChild(canvas);
     card.appendChild(body); col.appendChild(card); panelsEl.appendChild(col);
@@ -77,7 +77,7 @@
         {label: 'RX (Mbps)', data: [], borderColor: '#0d6efd', tension: 0.2},
         {label: 'TX (Mbps)', data: [], borderColor: '#198754', tension: 0.2},
       ]},
-      options: { responsive: true, animation: false, interaction: {mode:'index', intersect:false}, scales: { y: { beginAtZero: true, title:{display:true, text:'Mbps'} }, x: { title:{display:true, text:'Time'} } } }
+      options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: {mode:'index', intersect:false}, scales: { y: { beginAtZero: true, title:{display:true, text:'Mbps'} }, x: { title:{display:true, text:'Time'} } } }
     });
 
     let timer = null;
@@ -107,6 +107,13 @@
       }
     }
 
+    // Live badges for current RX/TX
+    const badges = makeEl('div', 'mt-2');
+    badges.innerHTML = '<span class="badge text-bg-primary me-2" id="rxb">RX: -</span><span class="badge text-bg-success" id="txb">TX: -</span>';
+    body.appendChild(badges);
+    const rxb = badges.querySelector('#rxb');
+    const txb = badges.querySelector('#txb');
+
     async function pollOnce() {
       const id = devSel.value; const iface = ifSel.value; if (!id || !iface) return;
       try {
@@ -122,6 +129,8 @@
         }
         if ('rx_bytes' in j) lastCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes }; else lastCounters = null;
         if (rxMbps != null && txMbps != null) {
+          rxb.textContent = `RX: ${rxMbps.toFixed(1)} Mbps`;
+          txb.textContent = `TX: ${txMbps.toFixed(1)} Mbps`;
           chart.data.labels.push(Object.assign(new Date(nowTs).toLocaleTimeString(), { _ts: nowTs }));
           chart.data.datasets[0].data.push(rxMbps); chart.data.datasets[1].data.push(txMbps);
           trimWindow(); chart.update();

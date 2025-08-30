@@ -371,29 +371,59 @@ def get_interface_rates(device, interface_name: str) -> Optional[Dict[str, float
     """
     if getattr(device, 'device_type', 'mikrotik') == 'linux':
         return None
+    # Try multiple command variants and quoting; handle spaced digits
+    data = ''
     try:
         client = _open_ssh_client(device)
-        cmd = f"/interface monitor-traffic interface={interface_name} once without-paging"
-        _, out, _ = client.exec_command(cmd)
-        data = out.read().decode(errors='ignore')
+        variants = [
+            f"/interface monitor-traffic interface=\"{interface_name}\" once without-paging",
+            f"/interface monitor-traffic interface={interface_name} once without-paging",
+            f"/interface/monitor-traffic interface=\"{interface_name}\" once without-paging",
+            f"/tool/monitor-traffic interface=\"{interface_name}\" once without-paging",
+        ]
+        for cmd in variants:
+            try:
+                _, out, _ = client.exec_command(cmd)
+                tmp = out.read().decode(errors='ignore')
+                if tmp and tmp.strip():
+                    data = tmp
+                    break
+            except Exception:
+                continue
         client.close()
     except Exception:
+        return None
+    if not data:
         return None
     rx = None
     tx = None
     for line in data.splitlines():
-        mrx = re.search(r"rx-bits-per-second\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        mrx = re.search(r"rx-bits-per-second\s*:\s*([0-9 ][0-9 ]*)", line, re.IGNORECASE)
         if mrx:
             try:
-                rx = float(mrx.group(1))
+                rx = float(mrx.group(1).replace(' ', ''))
             except ValueError:
                 pass
-        mtx = re.search(r"tx-bits-per-second\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        mtx = re.search(r"tx-bits-per-second\s*:\s*([0-9 ][0-9 ]*)", line, re.IGNORECASE)
         if mtx:
             try:
-                tx = float(mtx.group(1))
+                tx = float(mtx.group(1).replace(' ', ''))
             except ValueError:
                 pass
+        if rx is None:
+            mrx2 = re.search(r"rx-rate\s*:\s*([0-9 ][0-9 ]*)\s*bps", line, re.IGNORECASE)
+            if mrx2:
+                try:
+                    rx = float(mrx2.group(1).replace(' ', ''))
+                except ValueError:
+                    pass
+        if tx is None:
+            mtx2 = re.search(r"tx-rate\s*:\s*([0-9 ][0-9 ]*)\s*bps", line, re.IGNORECASE)
+            if mtx2:
+                try:
+                    tx = float(mtx2.group(1).replace(' ', ''))
+                except ValueError:
+                    pass
     if rx is None and tx is None:
         return None
     return {"rx_bps": rx or 0.0, "tx_bps": tx or 0.0}
