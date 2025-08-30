@@ -362,11 +362,19 @@ def _scheduled_hourly_report() -> None:
             else:
                 st_str = "-"
 
-            check = PingCheck.query.filter_by(device_id=d.id).first()
-            rtt = f"{check.last_rtt_ms:.1f} ms" if check and check.last_rtt_ms is not None else "-"
+            # Collect all ping monitors' latencies
+            ping_checks = PingCheck.query.filter_by(device_id=d.id).order_by(PingCheck.name.asc()).all()
+            if ping_checks:
+                ping_parts = []
+                for pc in ping_checks:
+                    rtt_display = f"{pc.last_rtt_ms:.1f} ms" if pc.last_rtt_ms is not None else "Timeout"
+                    ping_parts.append(f"{pc.name}: {rtt_display}")
+                rtt = " | ".join(ping_parts)
+            else:
+                rtt = "-"
 
             # Get latest fiber sample per device across its checks
-            fiber_checks = FiberCheck.query.filter_by(device_id=d.id).all()
+            fiber_checks = FiberCheck.query.filter_by(device_id=d.id).order_by(FiberCheck.name.asc()).all()
             fiber_lines = []
             for fc in fiber_checks:
                 rx = f"{fc.last_rx_dbm:.2f} dBm" if fc.last_rx_dbm is not None else "-"
