@@ -15,6 +15,7 @@ from models import PingSample
 from models import FiberCheck, FiberSample
 from models import AppSetting, User, Company, UserCompany, CompanyTelegramSetting
 from scheduler import scheduler, add_or_update_backup_job, remove_backup_job, start_monitoring_job
+from scheduler import _chunk_text_for_telegram
 from netmiko_utils import perform_manual_backup
 from telegram_utils import send_telegram_message, send_telegram_message_with_details
 import requests
@@ -922,6 +923,101 @@ def create_app() -> Flask:
             'message': message,
             'company_id': company_id
         })
+
+    @app.route('/admin/report/status')
+    @login_required
+    def admin_report_status():
+        if not current_user.is_superadmin:
+            return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+        now = datetime.now(timezone.utc)
+        companies = Company.query.order_by(Company.id.asc()).all()
+        out = []
+        for c in companies:
+            settings = CompanyTelegramSetting.query.filter_by(company_id=c.id).first()
+            devices = Device.query.filter_by(company_id=c.id).all()
+            last_sent = settings.last_report_sent_at if settings else None
+            if last_sent is not None and last_sent.tzinfo is None:
+                last_sent = last_sent.replace(tzinfo=timezone.utc)
+            interval = (settings.report_interval_minutes if settings else 60) or 60
+            should_send = False
+            if settings and settings.enabled:
+                should_send = last_sent is None or (now - last_sent).total_seconds() >= interval * 60
+            out.append({
+                'company_id': c.id,
+                'company_name': c.name,
+                'enabled': bool(settings.enabled) if settings else False,
+                'interval_minutes': interval,
+                'devices_count': len(devices),
+                'last_report_sent_at': last_sent.isoformat() if last_sent else None,
+                'should_send_now': should_send,
+            })
+        return jsonify({'success': True, 'now': now.isoformat(), 'companies': out})
+
+    @app.route('/admin/report/send/<int:company_id>', methods=['POST'])
+    @login_required
+    def admin_report_send(company_id: int):
+        if not current_user.is_superadmin:
+            return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+        settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
+        if not settings or not settings.enabled:
+            return jsonify({'success': False, 'error': 'Settings missing or disabled'})
+
+        # Build report text similarly to scheduler
+        lines = ["<b>Performance Report</b>"]
+        devices = Device.query.filter_by(company_id=company_id).order_by(Device.name.asc()).all()
+        for d in devices:
+            latest = (
+                ResourceMetric.query.filter_by(device_id=d.id)
+                .order_by(ResourceMetric.timestamp.desc())
+                .first()
+            )
+            cpu = f"{latest.cpu_load_percent:.0f}%" if latest and latest.cpu_load_percent is not None else "-"
+            if latest and latest.total_memory_bytes and latest.free_memory_bytes is not None:
+                used_mem = latest.total_memory_bytes - latest.free_memory_bytes
+                mem_pct = (used_mem / latest.total_memory_bytes) * 100.0
+                mem_str = f"{mem_pct:.0f}%"
+            else:
+                mem_str = "-"
+            if latest and latest.total_storage_bytes and latest.free_storage_bytes is not None:
+                used_st = latest.total_storage_bytes - latest.free_storage_bytes
+                st_pct = (used_st / latest.total_storage_bytes) * 100.0
+                st_str = f"{st_pct:.0f}%"
+            else:
+                st_str = "-"
+            check = PingCheck.query.filter_by(device_id=d.id).first()
+            rtt = f"{check.last_rtt_ms:.1f} ms" if check and check.last_rtt_ms is not None else "-"
+            fiber_checks = FiberCheck.query.filter_by(device_id=d.id).all()
+            fiber_lines = []
+            for fc in fiber_checks:
+                rx = f"{fc.last_rx_dbm:.2f} dBm" if fc.last_rx_dbm is not None else "-"
+                tx = f"{fc.last_tx_dbm:.2f} dBm" if fc.last_tx_dbm is not None else "-"
+                fiber_lines.append(f"Fiber {fc.name} ({fc.interface_name}): RX {rx}, TX {tx}")
+            fiber_str = ("\n" + "\n".join(fiber_lines)) if fiber_lines else ""
+            lines.append(
+                f"\n<b>Device:</b> {d.name}\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | Latency: {rtt}{fiber_str}"
+            )
+
+        if len(lines) <= 1:
+            return jsonify({'success': False, 'error': 'No devices to report'})
+
+        text = "\n".join(lines)
+        parts = _chunk_text_for_telegram(text)
+        from telegram_utils import send_company_telegram_message
+        all_ok = True
+        statuses = []
+        for idx, part in enumerate(parts, start=1):
+            prefix = f"Part {idx}/{len(parts)}\n" if len(parts) > 1 else ""
+            ok = send_company_telegram_message(company_id, prefix + part)
+            statuses.append({'part': idx, 'ok': ok})
+            if not ok:
+                all_ok = False
+                break
+        if all_ok:
+            settings.last_report_sent_at = datetime.now(timezone.utc)
+            db.session.commit()
+        return jsonify({'success': all_ok, 'parts': statuses})
 
     @app.route('/messages', methods=['GET', 'POST'])
     @login_required
