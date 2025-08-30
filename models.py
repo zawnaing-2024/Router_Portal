@@ -105,6 +105,9 @@ class FiberSample(db.Model):
     oper_status = db.Column(db.Integer)
 
 
+
+
+
 class AppSetting(db.Model):
     __tablename__ = 'app_settings'
     key = db.Column(db.String(64), primary_key=True)

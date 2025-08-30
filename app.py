@@ -195,6 +195,8 @@ def _run_sqlite_migrations() -> None:
             except Exception:
                 pass
 
+
+
             # Ensure ping_checks and fiber_checks have company_id through device relationship
             # (This is handled via joins in queries, no additional columns needed)
     except Exception:
@@ -1692,6 +1694,8 @@ def create_app() -> Flask:
                 rx_bps = 0
                 tx_bps = 0
 
+
+
             return jsonify({
                 'ts': datetime.now(timezone.utc).isoformat(),
                 'rx_bps': rx_bps,
@@ -1730,6 +1734,37 @@ def create_app() -> Flask:
 
         print("[BW] rate not available after all attempts")
         return jsonify({'error': 'rate not available'}), 502
+
+
+
+    @app.route('/api/test_telegram')
+    @login_required
+    def test_telegram():
+        """Test Telegram configuration and send a test message"""
+        from models import CompanyTelegramSetting
+        from telegram_utils import send_company_telegram_message
+
+        user_company_ids = get_user_company_ids(current_user.id)
+        if not user_company_ids:
+            return jsonify({'error': 'No company access'}), 403
+
+        company_id = user_company_ids[0]  # Use first company
+        settings = CompanyTelegramSetting.query.filter_by(company_id=company_id).first()
+
+        if not settings:
+            return jsonify({'error': 'No Telegram settings found'}), 404
+
+        test_message = f"🧪 Test message from Network Portal\nTime: {datetime.now(timezone.utc).isoformat()}\nCompany: {company_id}"
+        success = send_company_telegram_message(company_id, test_message)
+
+        return jsonify({
+            'success': success,
+            'company_id': company_id,
+            'bot_token': bool(settings.bot_token),
+            'chat_id': bool(settings.chat_id),
+            'enabled': settings.enabled,
+            'report_interval': settings.report_interval_minutes
+        })
 
     return app
 

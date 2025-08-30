@@ -10,6 +10,7 @@
       <option value="5000">5s</option>
     </select>
     <button id="clearCache" class="btn btn-sm btn-outline-warning">Clear Cache</button>
+    <button id="testTelegram" class="btn btn-sm btn-outline-info">Test Telegram</button>
   </div>
   </div>
 
@@ -223,8 +224,8 @@
 
   intervalSel.addEventListener('change', () => startTimer());
 
-  // Clear cache on page load to remove any quoted interface names
-  clearCache();
+  // Restore saved monitors on page load (don't clear cache)
+  restoreRows();
 
   // Add event listener for clear cache button
   document.getElementById('clearCache').addEventListener('click', () => {
@@ -232,10 +233,33 @@
     alert('Cache cleared! Please refresh the page.');
   });
 
+  // Add event listener for test Telegram button
+  document.getElementById('testTelegram').addEventListener('click', async () => {
+    try {
+      const response = await fetch('/api/test_telegram');
+      const result = await response.json();
+
+      if (response.ok) {
+        if (result.success) {
+          alert(`✅ Telegram test successful!\n\nCompany: ${result.company_id}\nBot Token: ${result.bot_token ? '✅ Set' : '❌ Missing'}\nChat ID: ${result.chat_id ? '✅ Set' : '❌ Missing'}\nEnabled: ${result.enabled ? '✅ Yes' : '❌ No'}\nReport Interval: ${result.report_interval} minutes`);
+        } else {
+          alert(`❌ Telegram test failed!\n\nCompany: ${result.company_id}\nBot Token: ${result.bot_token ? '✅ Set' : '❌ Missing'}\nChat ID: ${result.chat_id ? '✅ Set' : '❌ Missing'}\nEnabled: ${result.enabled ? '✅ Yes' : '❌ No'}\n\nPlease check your Telegram settings in Admin panel.`);
+        }
+      } else {
+        alert(`❌ Error: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error testing Telegram:', error);
+      alert('❌ Error testing Telegram configuration');
+    }
+  });
+
   // initial
   restoreRows();
   startTimer();
   pollAll();
+
+
 })();
 </script>
 {% endblock %}
