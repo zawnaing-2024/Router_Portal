@@ -498,86 +498,41 @@ def read_routeros_interface_bytes(device, interface_name: str) -> Optional[Tuple
     """
     try:
         client = _open_ssh_client(device)
-        # Resolve interface ID first for reliability
-        id_cmds = [
-            f"/interface get [find where name=\"{interface_name}\"] .id",
-            f"/interface get [find name=\"{interface_name}\"] .id",
+        # Try ethernet monitor first, then print stats - these give actual counters
+        cmds = [
+            f"/interface ethernet monitor {interface_name} once",
+            f"/interface monitor {interface_name} once",
+            f"/interface print where name=\"{interface_name}\" stats detail",
+            f"/interface print where name=\"{interface_name}\" stats",
         ]
-        int_id = None
-        for cmd in id_cmds:
+        rx_val = None
+        tx_val = None
+        for cmd in cmds:
             try:
-                print(f"[BW] id cmd: {cmd}")
+                print(f"[BW] counter cmd: {cmd}")
                 _, out, _ = client.exec_command(cmd)
-                s = out.read().decode(errors='ignore').strip()
-                if s:
-                    int_id = s.splitlines()[0].strip()
+                data = out.read().decode(errors='ignore')
+                print(f"[BW] counter output: {data[:400]}")
+                # Parse from ethernet monitor format
+                rx_match = re.search(r"rx-byte\s*:\s*([0-9]+)", data, re.MULTILINE)
+                if rx_match:
+                    rx_val = int(rx_match.group(1))
+                tx_match = re.search(r"tx-byte\s*:\s*([0-9]+)", data, re.MULTILINE)
+                if tx_match:
+                    tx_val = int(tx_match.group(1))
+                # Also try rx-bytes/tx-bytes
+                if rx_val is None:
+                    rx_match = re.search(r"rx-bytes\s*:\s*([0-9]+)", data, re.MULTILINE)
+                    if rx_match:
+                        rx_val = int(rx_match.group(1))
+                if tx_val is None:
+                    tx_match = re.search(r"tx-bytes\s*:\s*([0-9]+)", data, re.MULTILINE)
+                    if tx_match:
+                        tx_val = int(tx_match.group(1))
+                if rx_val is not None and tx_val is not None:
                     break
             except Exception:
                 continue
-        rx_val = None
-        tx_val = None
-        if int_id:
-            # Try multiple field names across versions
-            rx_fields = ["rx-byte", "rx-bytes"]
-            tx_fields = ["tx-byte", "tx-bytes"]
-            for f in rx_fields:
-                try:
-                    cmd = f"/interface get {int_id} {f}"
-                    print(f"[BW] bytes cmd: {cmd}")
-                    _, out, _ = client.exec_command(cmd)
-                    s = out.read().decode(errors='ignore').strip()
-                    m = re.search(r"([0-9]+)", s)
-                    if m:
-                        rx_val = int(m.group(1))
-                        break
-                except Exception:
-                    continue
-            for f in tx_fields:
-                try:
-                    cmd = f"/interface get {int_id} {f}"
-                    print(f"[BW] bytes cmd: {cmd}")
-                    _, out, _ = client.exec_command(cmd)
-                    s = out.read().decode(errors='ignore').strip()
-                    m = re.search(r"([0-9]+)", s)
-                    if m:
-                        tx_val = int(m.group(1))
-                        break
-                except Exception:
-                    continue
-        # Fallback to find-by-name if id resolution failed
-        if rx_val is None or tx_val is None:
-            variants_rx = [
-                f"/interface get [find where name=\"{interface_name}\"] rx-byte",
-                f"/interface get [find where name=\"{interface_name}\"] rx-bytes",
-            ]
-            variants_tx = [
-                f"/interface get [find where name=\"{interface_name}\"] tx-byte",
-                f"/interface get [find where name=\"{interface_name}\"] tx-bytes",
-            ]
-            if rx_val is None:
-                for cmd in variants_rx:
-                    try:
-                        print(f"[BW] bytes cmd: {cmd}")
-                        _, out, _ = client.exec_command(cmd)
-                        s = out.read().decode(errors='ignore').strip()
-                        m = re.search(r"([0-9]+)", s)
-                        if m:
-                            rx_val = int(m.group(1))
-                            break
-                    except Exception:
-                        continue
-            if tx_val is None:
-                for cmd in variants_tx:
-                    try:
-                        print(f"[BW] bytes cmd: {cmd}")
-                        _, out, _ = client.exec_command(cmd)
-                        s = out.read().decode(errors='ignore').strip()
-                        m = re.search(r"([0-9]+)", s)
-                        if m:
-                            tx_val = int(m.group(1))
-                            break
-                    except Exception:
-                        continue
         client.close()
         if rx_val is not None and tx_val is not None:
             print(f"[BW] ssh bytes parsed: rx={rx_val} tx={tx_val}")
