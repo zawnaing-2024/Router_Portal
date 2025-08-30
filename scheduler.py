@@ -30,6 +30,25 @@ def _job_id(device_id: int) -> str:
     return f"backup_device_{device_id}"
 
 
+def _chunk_text_for_telegram(text: str, limit: int = 3500) -> list[str]:
+    """Split text into chunks under Telegram's 4096-char limit.
+
+    We keep a safety margin and prefer to split on newlines.
+    """
+    if not text:
+        return [""]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind('\n', 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip('\n')
+    chunks.append(remaining)
+    return chunks
+
+
 def add_or_update_backup_job(device: Device) -> None:
     job_id = _job_id(device.id)
 
@@ -359,7 +378,7 @@ def _scheduled_hourly_report() -> None:
                 f"\n<b>Device:</b> {d.name}\nCPU: {cpu} | RAM used: {mem_str} | Storage used: {st_str} | Latency: {rtt}{fiber_str}"
             )
 
-        # Send one message per company, respecting report interval
+        # Send one message per company, respecting report interval and Telegram limits
         now = datetime.now(timezone.utc)
         for company_id, lines in company_to_lines.items():
             if not company_id:
@@ -368,9 +387,28 @@ def _scheduled_hourly_report() -> None:
             if not settings or not settings.enabled:
                 continue
             interval = settings.report_interval_minutes or 60
-            if settings.last_report_sent_at is None or (now - settings.last_report_sent_at).total_seconds() >= interval * 60:
-                ok = send_company_telegram_message(company_id, "\n".join(lines))
-                settings.last_report_sent_at = now if ok else settings.last_report_sent_at
+
+            # Normalize last_report_sent_at to aware UTC for subtraction safety
+            last_sent = settings.last_report_sent_at
+            if last_sent is not None and last_sent.tzinfo is None:
+                try:
+                    last_sent = last_sent.replace(tzinfo=timezone.utc)
+                except Exception:
+                    last_sent = None
+
+            should_send = last_sent is None or (now - last_sent).total_seconds() >= interval * 60
+            if should_send:
+                full_text = "\n".join(lines)
+                parts = _chunk_text_for_telegram(full_text)
+                all_ok = True
+                for idx, part in enumerate(parts, start=1):
+                    prefix = f"Part {idx}/{len(parts)}\n" if len(parts) > 1 else ""
+                    ok = send_company_telegram_message(company_id, prefix + part)
+                    if not ok:
+                        all_ok = False
+                        break
+                if all_ok:
+                    settings.last_report_sent_at = now
         db.session.commit()
 
 
