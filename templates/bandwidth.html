@@ -69,6 +69,26 @@
   let timer = null;
   let rows = []; // {id, device_id, device_name, iface, name, rx_el, tx_el, lastCounters}
 
+  function saveRows() {
+    try {
+      const toSave = rows.map(r => ({ device_id: r.device_id, device_name: r.device_name, iface: r.iface, name: r.name || '' }));
+      localStorage.setItem('bw_rows', JSON.stringify(toSave));
+      localStorage.setItem('bw_interval', intervalSel.value || '3000');
+    } catch {}
+  }
+
+  function restoreRows() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('bw_rows') || '[]');
+      const savedInterval = localStorage.getItem('bw_interval');
+      if (savedInterval) intervalSel.value = savedInterval;
+      if (Array.isArray(saved)) {
+        rows = saved.map(o => ({ device_id: String(o.device_id), device_name: o.device_name, iface: o.iface, name: o.name || '', rx_el: null, tx_el: null, lastCounters: null }));
+        renderRows();
+      }
+    } catch {}
+  }
+
   async function loadInterfacesForSelected() {
     addIface.innerHTML = '<option value="" disabled selected>Loading...</option>';
     addIface.disabled = true;
@@ -102,6 +122,7 @@
       btn.addEventListener('click', () => {
         rows = rows.filter(r => r !== row);
         renderRows();
+        saveRows();
       });
       tdAct.appendChild(btn);
       tr.appendChild(tdNo); tr.appendChild(tdDev); tr.appendChild(tdIf); tr.appendChild(tdName); tr.appendChild(tdRx); tr.appendChild(tdTx); tr.appendChild(tdAct);
@@ -126,8 +147,14 @@
           rxMbps = Math.max(0, rx_bps)/1_000_000; txMbps = Math.max(0, tx_bps)/1_000_000;
         }
       }
-      if ('rx_bytes' in j) row.lastCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes };
-      else row.lastCounters = null;
+      if ('rx_bytes' in j) {
+        if (!row.lastCounters) {
+          row.rx_el.textContent = '...'; row.tx_el.textContent = '...';
+        }
+        row.lastCounters = { ts: nowTs, rx_bytes: j.rx_bytes, tx_bytes: j.tx_bytes };
+      } else {
+        row.lastCounters = null;
+      }
       if (rxMbps != null) row.rx_el.textContent = rxMbps.toFixed(2);
       if (txMbps != null) row.tx_el.textContent = txMbps.toFixed(2);
     } catch {
@@ -143,6 +170,7 @@
     if (timer) clearInterval(timer);
     const ms = parseInt(intervalSel.value || '3000', 10);
     timer = setInterval(pollAll, ms);
+    saveRows();
   }
 
   addDevice.addEventListener('change', loadInterfacesForSelected);
@@ -153,13 +181,17 @@
     const devName = addDevice.options[addDevice.selectedIndex].textContent;
     rows.push({ device_id: devId, device_name: devName, iface, name, rx_el: null, tx_el: null, lastCounters: null });
     renderRows();
+    saveRows();
+    // immediate first poll
+    pollRow(rows[rows.length - 1]);
   });
 
   intervalSel.addEventListener('change', () => startTimer());
 
   // initial
-  renderRows();
+  restoreRows();
   startTimer();
+  pollAll();
 })();
 </script>
 {% endblock %}
